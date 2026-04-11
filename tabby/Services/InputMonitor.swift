@@ -6,48 +6,8 @@ import Foundation
 /// and `Tab` acceptance. This is the boundary between raw CGEvents and Tabby's smaller
 /// input-event vocabulary.
 ///
-/// Only the event categories needed for typing-triggered prediction are modeled here.
-/// The rest of the app should reason about semantic events like "navigation" or "text mutation",
-/// not low-level macOS key codes.
-struct CapturedInputEvent: Equatable {
-    /// This enum is intentionally smaller than the raw CGEvent universe.
-    /// A reduced vocabulary makes the suggestion state machine easier to test and reason about.
-    enum Kind: String, Equatable {
-        case tab
-        case textMutation
-        case navigation
-        case shortcutMutation
-        case dismissal
-        case other
-    }
-
-    let kind: Kind
-    let keyCode: CGKeyCode
-    let characters: String
-    let flags: CGEventFlags
-
-    var shouldSchedulePrediction: Bool {
-        switch kind {
-        case .textMutation:
-            // Tabby generates after a completed word boundary, not on every character,
-            // to avoid prompting from half-typed fragments.
-            return keyCode == 49 || characters.hasTrailingSpaceBoundary
-        case .shortcutMutation:
-            return true
-        default:
-            return false
-        }
-    }
-
-    var shouldClearSuggestion: Bool {
-        switch kind {
-        case .textMutation, .navigation, .shortcutMutation, .dismissal:
-            return true
-        case .tab, .other:
-            return false
-        }
-    }
-}
+/// `CapturedInputEvent` now lives in `Models/InputModels.swift` so the rest of the app can depend
+/// on the semantic event type without importing this event-tap implementation.
 
 /// Installs a session event tap.
 /// We still observe normal typing, but we can now consume `Tab` when Tabby has a valid suggestion.
@@ -234,16 +194,5 @@ private extension CGEvent {
 
         keyboardGetUnicodeString(maxStringLength: length, actualStringLength: &length, unicodeString: buffer)
         return String(utf16CodeUnits: buffer, count: length)
-    }
-}
-
-private extension String {
-    /// Space-delimited triggering avoids sampling half-typed words like "I w".
-    var hasTrailingSpaceBoundary: Bool {
-        guard let lastScalar = unicodeScalars.last else {
-            return false
-        }
-
-        return CharacterSet.whitespaces.contains(lastScalar)
     }
 }

@@ -49,6 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let overlayController = OverlayController()
         let activationIndicatorController = ActivationIndicatorController()
         let screenshotContextGenerator = ScreenshotContextGenerator(runtimeManager: runtimeManager)
+        let visualContextCoordinator = VisualContextCoordinator(
+            screenshotContextGenerator: screenshotContextGenerator,
+            screenRecordingPermissionProvider: { permissionManager.screenRecordingGranted }
+        )
         let suggestionCoordinator = SuggestionCoordinator(
             permissionManager: permissionManager,
             focusModel: focusModel,
@@ -56,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             overlayController: overlayController,
             suggestionInserter: suggestionInserter,
             suggestionEngine: LlamaSuggestionEngine(runtimeManager: runtimeManager),
-            screenshotContextGenerator: screenshotContextGenerator,
+            visualContextCoordinator: visualContextCoordinator,
             contextBuffer: ContextBuffer(),
             configuration: .standard
         )

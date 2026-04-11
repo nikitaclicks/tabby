@@ -85,6 +85,42 @@ A few seconds saved per message adds up quickly over a full day.
 	<img src="https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/rainbow.png" alt="rainbow line" />
 </p>
 
+## Codebase Guide
+
+If you are maintaining Tabby, start with this mental model:
+
+- `tabby/App/`: lifecycle ownership and composition root
+  - `TabbyApp.swift` is the SwiftUI entry point
+  - `AppDelegate.swift` builds the long-lived services and wires them together
+  - `SuggestionCoordinator.swift` orchestrates the inline-completion state machine
+- `tabby/UI/`: presentation only
+  - menu bar content, welcome flow, and static guide views live here
+- `tabby/Services/`: side effects and OS boundaries
+  - Accessibility polling, input monitoring, overlay windows, model runtime, downloads, OCR, screenshots
+- `tabby/Models/`: shared value types and state contracts
+  - suggestion sessions, focus snapshots, runtime diagnostics, visual-context state
+- `tabby/Support/`: pure helper logic and low-level bridging
+  - Accessibility helpers, capability scoring, model-file resolution
+
+The main runtime flow is:
+
+1. `FocusTracker` polls the current focused AX element and reduces it into a `FocusSnapshot`.
+2. `InputMonitor` listens for global key events and classifies them into a smaller app-specific event model.
+3. `SuggestionCoordinator` combines focus state, input events, user settings, and runtime availability.
+4. `LlamaSuggestionEngine` asks `LlamaRuntimeManager` for a continuation and normalizes the result.
+5. `OverlayController` renders ghost text near the caret, and `SuggestionInserter` commits accepted text back into the host app.
+
+When debugging:
+
+- Start with `AppDelegate.swift` to understand ownership.
+- Read `SuggestionCoordinator.swift` next to understand the user-visible state machine.
+- Use `FocusTracker.swift` and `AXHelper.swift` when the bug is app compatibility or caret placement.
+- Use `LlamaRuntimeManager.swift` and `ScreenshotContextGenerator.swift` when the bug is generation latency or visual context.
+
+<p align="center">
+	<img src="https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/rainbow.png" alt="rainbow line" />
+</p>
+
 ## Quick Demo Flow For Judges
 
 1. Open Tabby.

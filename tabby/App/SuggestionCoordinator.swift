@@ -45,7 +45,7 @@ final class SuggestionCoordinator: ObservableObject {
     private let overlayController: OverlayController
     private let suggestionInserter: SuggestionInserter
     private let suggestionEngine: LlamaSuggestionEngine
-    private let screenshotContextGenerator: ScreenshotContextGenerator
+    private let visualContextCoordinator: VisualContextCoordinator
     private let contextBuffer: ContextBuffer
     private let configuration: SuggestionConfiguration
     private let userDefaults: UserDefaults
@@ -58,11 +58,9 @@ final class SuggestionCoordinator: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var debounceTask: Task<Void, Never>?
     private var generationTask: Task<Void, Never>?
-    private var visualContextTask: Task<Void, Never>?
     private var latestWorkID: UInt64 = 0
     private var lastLoggedMessage: String?
     private var activeSession: ActiveSuggestionSession?
-    private var activeAugmentationSession: FocusedInputAugmentationSession?
     /// After Tab inserts a chunk, AX may not reflect the new text for one or more poll cycles.
     /// This sentinel records the consumed count we just committed so reconcile() does not
     /// misinterpret the stale AX state as an undo and drop the session.
@@ -87,7 +85,7 @@ final class SuggestionCoordinator: ObservableObject {
         overlayController: OverlayController,
         suggestionInserter: SuggestionInserter,
         suggestionEngine: LlamaSuggestionEngine,
-        screenshotContextGenerator: ScreenshotContextGenerator,
+        visualContextCoordinator: VisualContextCoordinator,
         contextBuffer: ContextBuffer,
         configuration: SuggestionConfiguration,
         userDefaults: UserDefaults = .standard
@@ -110,13 +108,15 @@ final class SuggestionCoordinator: ObservableObject {
         self.overlayController = overlayController
         self.suggestionInserter = suggestionInserter
         self.suggestionEngine = suggestionEngine
-        self.screenshotContextGenerator = screenshotContextGenerator
+        self.visualContextCoordinator = visualContextCoordinator
         self.contextBuffer = contextBuffer
         self.configuration = configuration
         self.userDefaults = userDefaults
         selectedWordCountPreset = resolvedWordCountPreset
         selectedPromptMode = resolvedPromptMode
         totalTabAcceptedWordCount = max(storedTotalTabAcceptedWordCount, 0)
+        visualContextStatus = visualContextCoordinator.status
+        latestInjectedContextSummary = visualContextCoordinator.latestSummary
 
         if storedWordCountPreset == nil {
             userDefaults.set(resolvedWordCountPreset.rawValue, forKey: Self.selectedWordCountPresetDefaultsKey)
@@ -160,6 +160,15 @@ final class SuggestionCoordinator: ObservableObject {
         overlayController.onStateChange = { [weak self] state in
             self?.overlayState = state
         }
+
+        visualContextCoordinator.onStateChange = { [weak self] status, summary in
+            self?.visualContextStatus = status
+            self?.latestInjectedContextSummary = summary
+        }
+
+        visualContextCoordinator.onInjectedContextReady = { [weak self] elementIdentifier in
+            self?.schedulePredictionForCurrentFocusIfPossible(matching: elementIdentifier)
+        }
     }
 
     // MARK: - Lifecycle
@@ -172,11 +181,13 @@ final class SuggestionCoordinator: ObservableObject {
     /// Cancels any pending work and detaches long-lived callbacks during shutdown.
     func stop() {
         cancelPredictionWork()
-        cancelVisualContextWork(resetState: true)
+        visualContextCoordinator.cancel(resetState: true)
         hideOverlay(reason: "Overlay hidden because Tabby stopped observing suggestions.")
         inputMonitor.onEvent = nil
         inputMonitor.onSuppressedSyntheticInput = nil
         overlayController.onStateChange = nil
+        visualContextCoordinator.onStateChange = nil
+        visualContextCoordinator.onInjectedContextReady = nil
     }
 
     /// Clears any active suggestion work before the runtime swaps to a different model.
@@ -184,7 +195,7 @@ final class SuggestionCoordinator: ObservableObject {
     func prepareForRuntimeModelSwitch() {
         cancelPredictionWork()
         contextBuffer.clear()
-        cancelVisualContextWork(resetState: true)
+        visualContextCoordinator.cancel(resetState: true)
         clearSuggestion(clearDiagnostics: true)
         hideOverlay(reason: "Overlay hidden because the runtime model is switching.")
         state = .idle
@@ -234,10 +245,10 @@ final class SuggestionCoordinator: ObservableObject {
             if case .supported = focusModel.snapshot.capability,
                let focusedContext = focusModel.snapshot.context
             {
-                startVisualContextSessionIfNeeded(for: focusedContext)
+                visualContextCoordinator.startSessionIfNeeded(for: focusedContext)
             }
         } else {
-            cancelVisualContextWork(resetState: true)
+            visualContextCoordinator.cancel(resetState: true)
         }
 
         if permissionManager.inputMonitoringGranted,
@@ -251,7 +262,7 @@ final class SuggestionCoordinator: ObservableObject {
 
     private func handlePermissionChange() {
         if !permissionManager.screenRecordingGranted {
-            cancelVisualContextWork(resetState: true)
+            visualContextCoordinator.cancel(resetState: true)
         }
 
         reconcileWithCurrentEnvironment()
@@ -285,9 +296,9 @@ final class SuggestionCoordinator: ObservableObject {
         }
 
         if selectedPromptMode.usesVisualContext {
-            startVisualContextSessionIfNeeded(for: focusedContext)
+            visualContextCoordinator.startSessionIfNeeded(for: focusedContext)
         } else if visualContextStatus != .idle {
-            cancelVisualContextWork(resetState: true)
+            visualContextCoordinator.cancel(resetState: true)
         }
 
         if case .disabled = state {
@@ -329,7 +340,7 @@ final class SuggestionCoordinator: ObservableObject {
         if event.shouldClearSuggestion {
             cancelPredictionWork()
             clearSuggestion(clearDiagnostics: true)
-            hideOverlay(reason: overlayHideReason(for: event))
+            hideOverlay(reason: SuggestionSessionReconciler.overlayHideReason(for: event))
             if !event.shouldSchedulePrediction {
                 state = .idle
             }
@@ -362,7 +373,7 @@ final class SuggestionCoordinator: ObservableObject {
             }
 
             invalidateActiveSuggestion(
-                reason: overlayHideReason(for: event),
+                reason: SuggestionSessionReconciler.overlayHideReason(for: event),
                 clearDiagnostics: false
             )
             if event.shouldSchedulePrediction {
@@ -382,7 +393,7 @@ final class SuggestionCoordinator: ObservableObject {
 
         case .navigation, .dismissal:
             invalidateActiveSuggestion(
-                reason: overlayHideReason(for: event),
+                reason: SuggestionSessionReconciler.overlayHideReason(for: event),
                 clearDiagnostics: false
             )
             state = .idle
@@ -448,7 +459,7 @@ final class SuggestionCoordinator: ObservableObject {
             return
         }
 
-        guard shouldGenerateSuggestion(for: rawContext.precedingText) else {
+        guard SuggestionRequestFactory.shouldGenerateSuggestion(for: rawContext.precedingText) else {
             clearSuggestion()
             hideOverlay(reason: "Overlay hidden because suggestions wait for a completed word boundary (space).")
             state = .idle
@@ -456,27 +467,22 @@ final class SuggestionCoordinator: ObservableObject {
         }
 
         let context = contextBuffer.materialize(from: rawContext)
-        let injectedContextSummary = selectedPromptMode.usesVisualContext ? injectedContextSummary(for: context) : nil
-        let prompt = buildPrompt(from: context, injectedContextSummary: injectedContextSummary)
-        let requestPreview = buildRequestPreview(hasInjectedContext: injectedContextSummary != nil)
-        latestGenerationNumber = context.generation
-        latestRequestPreview = requestPreview
-        latestPromptPreview = prompt
-        latestRawModelOutput = nil
-        let request = SuggestionRequest(
+        let injectedContextSummary = selectedPromptMode.usesVisualContext
+            ? visualContextCoordinator.summary(for: context)
+            : nil
+        let requestBuildResult = SuggestionRequestFactory.buildRequest(
             context: context,
-            prompt: prompt,
+            promptMode: selectedPromptMode,
+            wordCountPreset: selectedWordCountPreset,
+            configuration: configuration,
             injectedContextSummary: injectedContextSummary,
-            generation: context.generation,
-            maxPredictionTokens: activeMaxPredictionTokens,
-            temperature: configuration.temperature,
-            topK: configuration.topK,
-            topP: configuration.topP,
-            minP: configuration.minP,
-            repetitionPenalty: configuration.repetitionPenalty,
-            maxSuffixCharacters: configuration.maxSuffixCharacters,
-            customAIInstructions: activeCompletionInstruction
+            visualContextStatus: visualContextStatus
         )
+        latestGenerationNumber = context.generation
+        latestRequestPreview = requestBuildResult.requestPreview
+        latestPromptPreview = requestBuildResult.promptPreview
+        latestRawModelOutput = nil
+        let request = requestBuildResult.request
 
         state = .generating
         logStage(
@@ -484,8 +490,8 @@ final class SuggestionCoordinator: ObservableObject {
             workID: workID,
             generation: context.generation,
             message: "Requesting a completion for \(context.elementIdentifier).",
-            request: requestPreview,
-            prompt: prompt
+            request: requestBuildResult.requestPreview,
+            prompt: requestBuildResult.promptPreview
         )
 
         generationTask = Task { [weak self] in
@@ -657,8 +663,13 @@ final class SuggestionCoordinator: ObservableObject {
 
         let liveContext = contextBuffer.materialize(from: rawContext)
 
-        switch reconcile(session: session, with: liveContext) {
-        case let .valid(reconciledSession, advancement):
+        switch SuggestionSessionReconciler.reconcile(
+            session: session,
+            with: liveContext,
+            pendingInsertionConsumedCount: pendingInsertionConsumedCount
+        ) {
+        case let .valid(reconciledSession, advancement, nextPendingInsertionConsumedCount):
+            pendingInsertionConsumedCount = nextPendingInsertionConsumedCount
             activeSession = reconciledSession
             latestGenerationNumber = liveContext.generation
             applySessionDiagnostics(reconciledSession, acceptanceAction: advancement?.actionSummary ?? latestAcceptanceAction)
@@ -694,7 +705,7 @@ final class SuggestionCoordinator: ObservableObject {
     /// Fully disables prediction, clears cached context, and updates UI messaging with the cause.
     private func disablePredictions(reason: String) {
         cancelPredictionWork()
-        cancelVisualContextWork(resetState: true)
+        visualContextCoordinator.cancel(resetState: true)
         contextBuffer.clear()
         clearSuggestion(clearDiagnostics: true)
         hideOverlay(reason: reason)
@@ -733,113 +744,6 @@ final class SuggestionCoordinator: ObservableObject {
 
     // MARK: - Visual Context
 
-    /// Starts one screenshot-derived augmentation session per focused field.
-    /// We intentionally scope this to field identity rather than text generation number because
-    /// the screenshot context should survive normal typing inside the same input.
-    private func startVisualContextSessionIfNeeded(for snapshotContext: FocusedInputSnapshot) {
-        if let activeAugmentationSession,
-           activeAugmentationSession.elementIdentifier == snapshotContext.elementIdentifier
-        {
-            if case .unavailable(let reason) = activeAugmentationSession.status,
-               reason.localizedCaseInsensitiveContains("Screen Recording"),
-               permissionManager.screenRecordingGranted
-            {
-                cancelVisualContextWork(resetState: true)
-            } else {
-                return
-            }
-        }
-
-        cancelVisualContextWork(resetState: false)
-
-        let initialStatus: VisualContextStatus = permissionManager.screenRecordingGranted
-            ? .capturing
-            : .unavailable("Screen Recording permission is required for screenshot-derived prompt context.")
-        let session = FocusedInputAugmentationSession(
-            sessionID: UUID(),
-            elementIdentifier: snapshotContext.elementIdentifier,
-            contentSignatureAtStart: snapshotContext.contentSignature,
-            status: initialStatus,
-            injectedContext: nil
-        )
-
-        activeAugmentationSession = session
-        visualContextStatus = initialStatus
-        latestInjectedContextSummary = nil
-
-        guard permissionManager.screenRecordingGranted else {
-            return
-        }
-
-        visualContextTask = Task { [weak self] in
-            guard let self else {
-                return
-            }
-
-            do {
-                let injectedContext = try await screenshotContextGenerator.generateContext(
-                    for: snapshotContext,
-                    onStatusChange: { [weak self] status in
-                        await self?.setVisualContextStatus(status, for: session.sessionID)
-                    }
-                )
-                guard !Task.isCancelled else {
-                    return
-                }
-
-                applyInjectedVisualContext(
-                    injectedContext,
-                    for: session.sessionID,
-                    elementIdentifier: snapshotContext.elementIdentifier
-                )
-            } catch is CancellationError {
-                return
-            } catch let error as ScreenshotContextGenerationError {
-                setVisualContextStatus(
-                    errorStatus(for: error),
-                    for: session.sessionID
-                )
-            } catch {
-                setVisualContextStatus(
-                    .failed(error.localizedDescription),
-                    for: session.sessionID
-                )
-            }
-        }
-    }
-
-    /// Updates only the current augmentation session so stale async screenshot work cannot mutate
-    /// the next field after focus changes.
-    private func setVisualContextStatus(_ status: VisualContextStatus, for sessionID: UUID) {
-        guard activeAugmentationSession?.sessionID == sessionID else {
-            return
-        }
-
-        activeAugmentationSession?.status = status
-        visualContextStatus = status
-    }
-
-    /// Commits the generated screenshot summary and optionally refreshes suggestions for the
-    /// still-focused field so subsequent predictions pick up the new injected context.
-    private func applyInjectedVisualContext(
-        _ injectedContext: InjectedVisualContext,
-        for sessionID: UUID,
-        elementIdentifier: String
-    ) {
-        guard activeAugmentationSession?.sessionID == sessionID,
-              activeAugmentationSession?.elementIdentifier == elementIdentifier
-        else {
-            return
-        }
-
-        activeAugmentationSession?.status = .ready
-        activeAugmentationSession?.injectedContext = injectedContext
-        visualContextStatus = .ready
-        latestInjectedContextSummary = injectedContext.summary
-
-        schedulePredictionForCurrentFocusIfPossible(matching: elementIdentifier)
-    }
-
     /// Once screenshot context becomes ready, regenerate only if the user is still in the same
     /// field and there is enough typed text for a real inline completion request.
     private func schedulePredictionForCurrentFocusIfPossible(matching elementIdentifier: String) {
@@ -849,7 +753,7 @@ final class SuggestionCoordinator: ObservableObject {
         guard case .supported = snapshot.capability,
               let context = snapshot.context,
               context.elementIdentifier == elementIdentifier,
-              shouldGenerateSuggestion(for: context.precedingText)
+              SuggestionRequestFactory.shouldGenerateSuggestion(for: context.precedingText)
         else {
             return
         }
@@ -857,166 +761,9 @@ final class SuggestionCoordinator: ObservableObject {
         schedulePrediction()
     }
 
-    /// Clears screenshot-derived context state and cancels any in-flight capture/OCR/summary work.
-    private func cancelVisualContextWork(resetState: Bool) {
-        visualContextTask?.cancel()
-        visualContextTask = nil
-        activeAugmentationSession = nil
-        latestInjectedContextSummary = nil
-
-        if resetState {
-            visualContextStatus = .idle
-        }
-    }
-
-    private func injectedContextSummary(for context: FocusedInputContext) -> String? {
-        guard let activeAugmentationSession,
-              activeAugmentationSession.elementIdentifier == context.elementIdentifier,
-              activeAugmentationSession.status == .ready
-        else {
-            return nil
-        }
-
-        return activeAugmentationSession.injectedContext?.summary
-    }
-
-    private func errorStatus(for error: ScreenshotContextGenerationError) -> VisualContextStatus {
-        switch error {
-        case let .unavailable(message):
-            return .unavailable(message)
-        case let .failed(message):
-            return .failed(message)
-        }
-    }
-
-    // MARK: - Prompt Construction
-
-    /// Builds the prompt contract that the local model sees for the current focused field.
-    private func buildPrompt(
-        from context: FocusedInputContext,
-        injectedContextSummary: String?
-    ) -> String {
-        let prefix = truncatedPromptPrefix(from: context.precedingText)
-
-        if selectedPromptMode == .prefixOnly {
-            // Prefix-only mode intentionally sends just the user's trailing text context.
-            // It is the lowest-latency path and avoids instruction-tuned prompt overhead.
-            return prefix
-        }
-
-        var sections = [
-            "You are an inline autocomplete engine for one text field.",
-            "",
-            "Rules (highest priority):",
-            "Return exactly one continuation fragment.",
-            selectedWordCountPreset.promptInstruction,
-            "Continue only from Prefix.",
-            "Do not repeat Prefix text.",
-            "ScreenContextHints are background hints only; never restate or continue them.",
-            "No numbering, no bullets, no labels, no quotes, no markdown, no newline.",
-            "Output plain text only."
-        ]
-
-        if let screenContextHints = normalizedScreenContextHints(from: injectedContextSummary) {
-            sections.append("ScreenContextHints: \(screenContextHints)")
-        }
-
-        sections.append("Prefix: \(prefix)")
-        sections.append("Continuation:")
-        return sections.joined(separator: "\n")
-    }
-
-    /// Screen context should be metadata, not prose continuation, so we normalize it into one line.
-    private func normalizedScreenContextHints(from summary: String?) -> String? {
-        guard let summary else {
-            return nil
-        }
-
-        var normalized = summary
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\\r", with: "")
-            .replacingOccurrences(of: "\\n+", with: ", ", options: .regularExpression)
-            .replacingOccurrences(
-                of: "^\\s*ScreenContextHints?\\s*:\\s*",
-                with: "",
-                options: .regularExpression
-            )
-            .replacingOccurrences(of: "\\s+,", with: ",", options: .regularExpression)
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ",.;:")))
-
-        if normalized.count > 160 {
-            normalized = String(normalized.prefix(160)).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        return normalized.isEmpty ? nil : normalized
-    }
-
-    /// Require completed word boundaries so prompts do not include half-typed trailing tokens.
-    private func shouldGenerateSuggestion(for precedingText: String) -> Bool {
-        let trimmed = precedingText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return false
-        }
-
-        guard let trailingScalar = precedingText.unicodeScalars.last else {
-            return false
-        }
-
-        return CharacterSet.whitespaces.contains(trailingScalar)
-    }
-
-    /// Keep only the latest short word tail to prevent long stale context from steering output.
-    private func truncatedPromptPrefix(from precedingText: String) -> String {
-        let characterWindow = String(precedingText.suffix(configuration.maxPrefixCharacters))
-        let trailingWords = characterWindow
-            .split(whereSeparator: { $0.isWhitespace })
-            .suffix(configuration.maxPrefixWords)
-            .map(String.init)
-            .joined(separator: " ")
-
-        return trailingWords.isEmpty ? characterWindow : trailingWords
-    }
-    
-    
     private func nextWorkID() -> UInt64 {
         latestWorkID &+= 1
         return latestWorkID
-    }
-
-    /// Produces a compact operator-facing summary of the current generation configuration.
-    private func buildRequestPreview(hasInjectedContext: Bool) -> String {
-        let screenshotContextSummary: String
-        if selectedPromptMode.usesVisualContext {
-            screenshotContextSummary = hasInjectedContext ? "ready" : visualContextStatus.shortLabel.lowercased()
-        } else {
-            screenshotContextSummary = "disabled"
-        }
-
-        return """
-        Backend: llama.swift
-        transport: in-process
-        suggestion_words: \(selectedWordCountPreset.displayLabel)
-        prompt_mode: \(selectedPromptMode.displayLabel)
-        n_predict: \(activeMaxPredictionTokens)
-        temperature: \(configuration.temperature)
-        top_k: \(configuration.topK)
-        top_p: \(configuration.topP)
-        min_p: \(configuration.minP)
-        repetition_penalty: \(configuration.repetitionPenalty)
-        prompt_style: \(selectedPromptMode == .prefixOnly ? "prefix-only" : "guided")
-        screenshot_context: \(screenshotContextSummary)
-        stop: first line only
-        """
-    }
-
-    private var activeCompletionInstruction: String {
-        [configuration.customAIInstructions, selectedWordCountPreset.promptInstruction]
-            .joined(separator: " ")
-    }
-
-    private var activeMaxPredictionTokens: Int {
-        max(configuration.maxPredictionTokens, selectedWordCountPreset.suggestedPredictionTokenBudget)
     }
 
     // MARK: - Acceptance and Session Reconciliation
@@ -1041,7 +788,10 @@ final class SuggestionCoordinator: ObservableObject {
             return passTabThrough(reason: "Tab passed through because text is currently selected.")
         }
 
-        guard overlayAllowsAcceptance(of: currentSession.remainingText) else {
+        guard SuggestionSessionReconciler.overlayAllowsAcceptance(
+            of: currentSession.remainingText,
+            overlayState: overlayState
+        ) else {
             return passTabThrough(reason: "Tab passed through because no visible ghost text matched the ready suggestion.")
         }
 
@@ -1050,11 +800,16 @@ final class SuggestionCoordinator: ObservableObject {
         if overlayState.isVisible {
             // A visible overlay means AX has already caught up to the current caret/text state,
             // so we can insist that live editor state and session state agree before accepting.
-            switch reconcile(session: currentSession, with: liveContext) {
+            switch SuggestionSessionReconciler.reconcile(
+                session: currentSession,
+                with: liveContext,
+                pendingInsertionConsumedCount: pendingInsertionConsumedCount
+            ) {
             case .invalid(let reason):
                 return passTabThrough(reason: reason)
 
-            case .valid(let reconciledSession, _):
+            case let .valid(reconciledSession, _, nextPendingInsertionConsumedCount):
+                pendingInsertionConsumedCount = nextPendingInsertionConsumedCount
                 sessionForAcceptance = reconciledSession
             }
         } else {
@@ -1071,7 +826,7 @@ final class SuggestionCoordinator: ObservableObject {
             return passTabThrough(reason: "Tab passed through because no remaining suggestion text was available.")
         }
 
-        let acceptedChunk = nextAcceptanceChunk(from: sessionForAcceptance.remainingText)
+        let acceptedChunk = SuggestionSessionReconciler.nextAcceptanceChunk(from: sessionForAcceptance.remainingText)
         guard !acceptedChunk.isEmpty else {
             return passTabThrough(reason: "Tab passed through because no remaining suggestion chunk was available.")
         }
@@ -1157,16 +912,14 @@ final class SuggestionCoordinator: ObservableObject {
     /// next expected tail exactly. This avoids a wasteful regeneration for text the user already
     /// committed to the field themselves.
     private func advanceActiveSessionIfTypedCharactersMatch(_ typedCharacters: String, session: ActiveSuggestionSession) -> Bool {
-        guard typedCharacters.isDirectTextMutation else {
-            return false
-        }
-
-        guard session.remainingText.hasPrefix(typedCharacters) else {
+        guard let advancedSession = SuggestionSessionReconciler.advanceIfTypedCharactersMatch(
+            typedCharacters,
+            session: session
+        ) else {
             return false
         }
 
         cancelPredictionWork()
-        let advancedSession = session.advancing(by: typedCharacters.count)
         activeSession = advancedSession
         applySessionDiagnostics(advancedSession, acceptanceAction: "User typed the next expected characters.")
 
@@ -1233,127 +986,15 @@ final class SuggestionCoordinator: ObservableObject {
         }
     }
 
-    private func reconcile(session: ActiveSuggestionSession, with liveContext: FocusedInputContext) -> SessionReconciliation {
-        guard liveContext.elementIdentifier == session.baseContext.elementIdentifier else {
-            return .invalid("Overlay hidden because the focused field changed.")
-        }
-
-        guard liveContext.selection.length == 0 else {
-            return .invalid("Overlay hidden because text is selected.")
-        }
-
-        guard liveContext.trailingText == session.baseContext.trailingText else {
-            return .invalid("Overlay hidden because text after the caret changed.")
-        }
-
-        guard liveContext.precedingText.hasPrefix(session.baseContext.precedingText) else {
-            return .invalid("Overlay hidden because text before the caret no longer matches the suggestion anchor.")
-        }
-
-        let consumedSuffix = String(liveContext.precedingText.dropFirst(session.baseContext.precedingText.count))
-        guard session.fullText.hasPrefix(consumedSuffix) else {
-            // If we just inserted via Tab, AX may still show stale text. Trust the sentinel
-            // for one reconciliation cycle instead of invalidating the whole session.
-            if let pending = pendingInsertionConsumedCount, pending == session.consumedCharacterCount {
-                return .valid(session, advancement: nil)
-            }
-            return .invalid("Overlay hidden because typed text diverged from the active suggestion.")
-        }
-
-        // AX caught up (or never lagged) — clear the sentinel.
-        if pendingInsertionConsumedCount != nil, consumedSuffix.count >= session.consumedCharacterCount {
-            pendingInsertionConsumedCount = nil
-        }
-
-        guard consumedSuffix.count >= session.consumedCharacterCount else {
-            // Same AX lag protection: if we just Tab-inserted, the preceding text hasn't updated yet.
-            if let pending = pendingInsertionConsumedCount, pending == session.consumedCharacterCount {
-                return .valid(session, advancement: nil)
-            }
-            return .invalid("Overlay hidden because the active suggestion was partially undone.")
-        }
-
-        let reconciledSession = session.withConsumedCharacters(consumedSuffix.count)
-        guard consumedSuffix.count != session.consumedCharacterCount else {
-            return .valid(reconciledSession, advancement: nil)
-        }
-
-        let advancedBy = consumedSuffix.count - session.consumedCharacterCount
-        let consumedAdvance = String(reconciledSession.acceptedText.suffix(advancedBy))
-        let advancement = SessionAdvancement(
-            stage: reconciledSession.isExhausted ? "session-exhausted" : "session-reconciled",
-            message: reconciledSession.isExhausted
-                ? "The live field state caught up with the fully consumed suggestion."
-                : "The live field state consumed \(advancedBy) additional suggestion characters.",
-            actionSummary: "Suggestion tail advanced from live editor state.",
-            exhaustionStage: "session-exhausted",
-            exhaustionMessage: "The live field state fully consumed the active suggestion.",
-            consumedText: consumedAdvance
-        )
-        return .valid(reconciledSession, advancement: advancement)
-    }
-
-    /// Accepts optional leading whitespace plus the next visible token.
-    /// This is intentionally a user-facing chunking rule rather than a model-token rule.
-    private func nextAcceptanceChunk(from remainingText: String) -> String {
-        guard !remainingText.isEmpty else {
-            return ""
-        }
-
-        var index = remainingText.startIndex
-        while index < remainingText.endIndex, remainingText[index].isWhitespace {
-            index = remainingText.index(after: index)
-        }
-
-        while index < remainingText.endIndex, !remainingText[index].isWhitespace {
-            index = remainingText.index(after: index)
-        }
-
-        return String(remainingText[..<index])
-    }
-
     /// Updates the global productivity counter from text accepted via Tab.
     private func recordAcceptedWords(from acceptedChunk: String) {
-        let acceptedWordCount = acceptedWordCount(in: acceptedChunk)
+        let acceptedWordCount = SuggestionSessionReconciler.acceptedWordCount(in: acceptedChunk)
         guard acceptedWordCount > 0 else {
             return
         }
 
         totalTabAcceptedWordCount += acceptedWordCount
         userDefaults.set(totalTabAcceptedWordCount, forKey: Self.totalTabAcceptedWordCountDefaultsKey)
-    }
-
-    /// Counts word-like tokens (contains letters/digits) so punctuation-only chunks do not inflate totals.
-    private func acceptedWordCount(in text: String) -> Int {
-        text
-            .split(whereSeparator: { $0.isWhitespace })
-            .filter { token in
-                token.unicodeScalars.contains(where: { CharacterSet.alphanumerics.contains($0) })
-            }
-            .count
-    }
-
-    private func overlayHideReason(for event: CapturedInputEvent) -> String {
-        switch event.kind {
-        case .textMutation, .shortcutMutation:
-            return "Overlay hidden because typing invalidated the current suggestion."
-        case .navigation:
-            return "Overlay hidden because caret navigation invalidated the current suggestion."
-        case .dismissal:
-            return "Overlay hidden because a dismissal key was pressed."
-        case .tab, .other:
-            return "Overlay hidden."
-        }
-    }
-
-    /// The overlay may be hidden briefly while we wait for the host app to publish an updated
-    /// caret position after partial acceptance, so hidden does not automatically mean "reject Tab."
-    private func overlayAllowsAcceptance(of text: String) -> Bool {
-        guard case let .visible(visibleText, _) = overlayState else {
-            return true
-        }
-
-        return visibleText == text
     }
 
     // MARK: - Overlay and Logging
@@ -1517,31 +1158,5 @@ final class SuggestionCoordinator: ObservableObject {
 
         let index = escaped.index(escaped.startIndex, offsetBy: 160)
         return "\(escaped[..<index])..."
-    }
-}
-
-private enum SessionReconciliation {
-    case valid(ActiveSuggestionSession, advancement: SessionAdvancement?)
-    case invalid(String)
-}
-
-private struct SessionAdvancement {
-    let stage: String
-    let message: String
-    let actionSummary: String
-    let exhaustionStage: String
-    let exhaustionMessage: String
-    let consumedText: String
-}
-
-private extension String {
-    /// Direct text input is the only mutation we can safely reconcile optimistically from the
-    /// key event alone. Control characters such as backspace or return require regeneration.
-    var isDirectTextMutation: Bool {
-        guard !isEmpty else {
-            return false
-        }
-
-        return unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) }
     }
 }
