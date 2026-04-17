@@ -36,25 +36,49 @@ final class PermissionManager: ObservableObject {
         screenRecordingGranted = CGPreflightScreenCaptureAccess()
     }
 
+    /// Returns the latest cached grant state for a specific permission kind.
+    ///
+    /// Keeping this switch here means higher-level UI can reason in terms of `TabbyPermissionKind`
+    /// instead of hard-coding three separate boolean properties everywhere.
+    func isGranted(_ permission: TabbyPermissionKind) -> Bool {
+        switch permission {
+        case .accessibility:
+            accessibilityGranted
+        case .inputMonitoring:
+            inputMonitoringGranted
+        case .screenRecording:
+            screenRecordingGranted
+        }
+    }
+
+    /// Core autocomplete depends on Accessibility plus Input Monitoring.
+    ///
+    /// Screen Recording stays tracked here because legacy visual-context experiments still depend on
+    /// it, but it is not part of the required "Tabby basically works" definition.
+    var requiredPermissionsGranted: Bool {
+        TabbyPermissionKind.allCases
+            .filter(\.isRequiredForAutocomplete)
+            .allSatisfy(isGranted(_:))
+    }
+
+    /// Shared opener used by onboarding and the menu-bar shortcuts.
+    func openSettings(for permission: TabbyPermissionKind) {
+        NSWorkspace.shared.open(permission.settingsURL)
+    }
+
     /// Opens System Settings directly to the Accessibility pane so the user can grant access.
     func openAccessibilitySettings() {
-        NSWorkspace.shared.open(
-            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-        )
+        openSettings(for: .accessibility)
     }
 
     /// Opens System Settings directly to the Input Monitoring pane so the user can grant access.
     func openInputMonitoringSettings() {
-        NSWorkspace.shared.open(
-            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!
-        )
+        openSettings(for: .inputMonitoring)
     }
 
     /// Opens System Settings directly to the Screen Recording pane for legacy screenshot tooling.
     func openScreenRecordingSettings() {
-        NSWorkspace.shared.open(
-            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
-        )
+        openSettings(for: .screenRecording)
     }
 }
 

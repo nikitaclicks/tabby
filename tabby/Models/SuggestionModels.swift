@@ -126,15 +126,15 @@ struct SuggestionConfiguration: Equatable, Sendable {
         topP: 0.7,
         minP: 0.08,
         repetitionPenalty: 1.05,
-        maxPrefixWords: 10,
+        maxPrefixWords: 50,
         // Prompt windows should stay small. Sending an entire editor buffer hurts latency with
         // little quality gain because Tabby is only completing the immediate local continuation.
-        maxPrefixCharacters: 400,
+        maxPrefixCharacters: 1000,
         maxSuffixCharacters: 192,
         // Hardcoded for now while we build the prompt foundations before wiring the Settings UI.
         defaultCustomAIInstructions: """
-            My name is Jacob Fu (jacobfu). I usually write in English.
-            Write in a friendly, professional and empathetic voice. Keep your sentences short, concise and readable.
+            My name is Jacob Fu. I usually write in English.
+            Write in a friendly, professional and empathetic voice.
             """,
         defaultWordCountPreset: .threeToSeven,
         defaultPromptMode: .prefixOnly
@@ -152,6 +152,9 @@ struct FocusedInputContext: Equatable, Sendable {
     let subrole: String?
     let caretRect: CGRect
     let inputFrameRect: CGRect?
+    /// Average character width in points observed from AX child frame measurements.
+    /// Used by caret prediction after tab insertion to match the target app's actual font.
+    let observedCharWidth: CGFloat?
     let precedingText: String
     let trailingText: String
     let selection: NSRange
@@ -167,6 +170,7 @@ struct FocusedInputContext: Equatable, Sendable {
         subrole = snapshot.subrole
         caretRect = snapshot.caretRect
         inputFrameRect = snapshot.inputFrameRect
+        observedCharWidth = snapshot.observedCharWidth
         precedingText = snapshot.precedingText
         trailingText = snapshot.trailingText
         selection = snapshot.selection

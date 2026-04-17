@@ -26,6 +26,9 @@ final class TabbyAppEnvironment {
     init() {
         let configuration = SuggestionConfiguration.standard
         let permissionManager = PermissionManager()
+        let permissionGuidanceController = PermissionGuidanceController(
+            permissionManager: permissionManager
+        )
         let runtimeManager = LlamaRuntimeManager()
         let runtimeModel = RuntimeBootstrapModel(runtimeManager: runtimeManager)
         let modelDownloadManager = ModelDownloadManager()
@@ -44,6 +47,7 @@ final class TabbyAppEnvironment {
         let appUpdateManager = AppUpdateManager()
         let welcomeCoordinator = WelcomeCoordinator(
             permissionManager: permissionManager,
+            permissionGuidanceController: permissionGuidanceController,
             runtimeModel: runtimeModel,
             modelDownloadManager: modelDownloadManager,
             suggestionSettings: suggestionSettings,

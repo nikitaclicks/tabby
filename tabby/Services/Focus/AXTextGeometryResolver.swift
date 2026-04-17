@@ -31,6 +31,17 @@ enum CaretGeometryQuality {
 struct CaretGeometryResult {
     let rect: CGRect
     let quality: CaretGeometryQuality
+    /// Observed average character width in Cocoa points, derived from real AX child frame
+    /// measurements. Used by caret prediction after tab insertion so the overlay shift matches
+    /// the actual font instead of guessing with a system font fallback. Nil when no child
+    /// frame data was available (e.g. BoundsForRange worked directly).
+    let observedCharWidth: CGFloat?
+
+    init(rect: CGRect, quality: CaretGeometryQuality, observedCharWidth: CGFloat? = nil) {
+        self.rect = rect
+        self.quality = quality
+        self.observedCharWidth = observedCharWidth
+    }
 }
 
 @MainActor
@@ -167,6 +178,17 @@ struct AXTextGeometryResolver {
 
         guard !textRuns.isEmpty else { return nil }
 
+        // Derive the average character width from the child frames — this is a direct measurement
+        // of the actual rendered font, not a guess. We aggregate across all children so a single
+        // short run doesn't skew the estimate.
+        var totalChars = 0
+        var totalWidth: CGFloat = 0
+        for run in textRuns {
+            totalChars += (run.text as NSString).length
+            totalWidth += run.frame.width
+        }
+        let charWidth: CGFloat? = totalChars > 0 ? totalWidth / CGFloat(totalChars) : nil
+
         // Find which child contains the caret by matching parent selection against cumulative
         // text lengths. AX selections use UTF-16 offsets, so we match on NSString length.
         let caretOffset = parentSelection.location
@@ -180,7 +202,8 @@ struct AXTextGeometryResolver {
                 let caretX = cocoaFrame.minX + fraction * cocoaFrame.width
                 return CaretGeometryResult(
                     rect: CGRect(x: caretX, y: cocoaFrame.minY, width: 2, height: cocoaFrame.height),
-                    quality: .derived
+                    quality: .derived,
+                    observedCharWidth: charWidth
                 )
             }
             cumulative += runLen
@@ -191,7 +214,8 @@ struct AXTextGeometryResolver {
         let lastFrame = AXHelper.cocoaRect(fromAccessibilityRect: textRuns.last!.frame)
         return CaretGeometryResult(
             rect: CGRect(x: lastFrame.maxX, y: lastFrame.minY, width: 2, height: lastFrame.height),
-            quality: .derived
+            quality: .derived,
+            observedCharWidth: charWidth
         )
     }
 

@@ -91,7 +91,8 @@ extension SuggestionCoordinator {
             // when AX catches up 100–250ms later.
             let predictedCaret = Self.predictedCaretRect(
                 after: acceptedChunk,
-                oldCaretRect: liveContext.caretRect
+                oldCaretRect: liveContext.caretRect,
+                observedCharWidth: liveContext.observedCharWidth
             )
             presentOverlay(text: advancedSession.remainingText, at: predictedCaret)
             // Force an early AX refresh so the real caret position corrects any prediction
@@ -214,13 +215,23 @@ extension SuggestionCoordinator {
 
     // MARK: - Caret Prediction
 
-    /// Estimates the caret rect after inserting a chunk by measuring the chunk's pixel width
-    /// with the system font and shifting the old caret rect rightward by that amount.
-    static func predictedCaretRect(after insertedChunk: String, oldCaretRect: CGRect) -> CGRect {
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 14)
-        ]
-        let chunkWidth = (insertedChunk as NSString).size(withAttributes: attrs).width
+    /// Estimates the caret rect after inserting a chunk by shifting the old caret rightward.
+    /// When `observedCharWidth` is available (measured from real AX child frames), we use it
+    /// directly — this matches the target app's actual font. Falls back to NSFont measurement.
+    static func predictedCaretRect(
+        after insertedChunk: String,
+        oldCaretRect: CGRect,
+        observedCharWidth: CGFloat?
+    ) -> CGRect {
+        let chunkWidth: CGFloat
+        if let observed = observedCharWidth {
+            chunkWidth = observed * CGFloat(insertedChunk.count)
+        } else {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 14)
+            ]
+            chunkWidth = (insertedChunk as NSString).size(withAttributes: attrs).width
+        }
         return CGRect(
             x: oldCaretRect.origin.x + chunkWidth,
             y: oldCaretRect.origin.y,

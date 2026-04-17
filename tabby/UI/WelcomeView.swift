@@ -14,6 +14,7 @@ struct WelcomeView: View {
     @ObservedObject var suggestionSettings: SuggestionSettingsModel
     @ObservedObject var foundationModelAvailabilityService: FoundationModelAvailabilityService
 
+    let permissionGuidanceController: PermissionGuidanceController
     let onDismiss: () -> Void
 
     @State private var step: WelcomeStep = .welcome
@@ -38,7 +39,7 @@ struct WelcomeView: View {
             Spacer(minLength: 0)
         }
         .padding(32)
-        .frame(width: 480)
+        .frame(width: 520)
         .background(Color(nsColor: .windowBackgroundColor))
         .animation(.easeInOut(duration: 0.2), value: step)
     }
@@ -99,56 +100,12 @@ private extension WelcomeView {
 
 private extension WelcomeView {
     var permissionsStep: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            WelcomeStepHeader(
-                title: "Grant Permissions",
-                subtitle: "Tabby needs access to read what you're typing and where your cursor is."
-            )
-
-            VStack(spacing: 0) {
-                WelcomePermissionRow(
-                    title: "Accessibility",
-                    subtitle: "Read focused field and caret position.",
-                    granted: permissionManager.accessibilityGranted,
-                    action: { permissionManager.openAccessibilitySettings() }
-                )
-
-                Divider().padding(.leading, 36)
-
-                WelcomePermissionRow(
-                    title: "Input Monitoring",
-                    subtitle: "Capture typing and Tab acceptance.",
-                    granted: permissionManager.inputMonitoringGranted,
-                    action: { permissionManager.openInputMonitoringSettings() }
-                )
-
-                Divider().padding(.leading, 36)
-
-                WelcomePermissionRow(
-                    title: "Screen Recording",
-                    subtitle: "Optional. Reserved for deprecated screenshot/OCR experiments.",
-                    granted: permissionManager.screenRecordingGranted,
-                    action: { permissionManager.openScreenRecordingSettings() },
-                    isOptional: true
-                )
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(.quaternary.opacity(0.5))
-            )
-
-            WelcomeNavigation(
-                canGoBack: true,
-                canContinue: requiredPermissionsGranted,
-                disabledHint: "Grant Accessibility and Input Monitoring to continue.",
-                onBack: { step = .welcome },
-                onContinue: { step = .chooseEngine }
-            )
-        }
-    }
-
-    var requiredPermissionsGranted: Bool {
-        permissionManager.accessibilityGranted && permissionManager.inputMonitoringGranted
+        WelcomePermissionStepView(
+            permissionManager: permissionManager,
+            permissionGuidanceController: permissionGuidanceController,
+            onBack: { step = .welcome },
+            onContinue: { step = .chooseEngine }
+        )
     }
 }
 
@@ -297,7 +254,7 @@ private extension WelcomeView {
 // MARK: - Shared Components
 
 /// Consistent header for wizard steps with a title and subtitle.
-private struct WelcomeStepHeader: View {
+struct WelcomeStepHeader: View {
     let title: String
     let subtitle: String
 
@@ -314,7 +271,7 @@ private struct WelcomeStepHeader: View {
 }
 
 /// Primary action button used on the welcome and done steps.
-private struct WelcomeButton: View {
+struct WelcomeButton: View {
     let title: String
     let action: () -> Void
 
@@ -331,7 +288,7 @@ private struct WelcomeButton: View {
 
 /// Back + Continue navigation bar used on middle wizard steps.
 /// "Continue" can be disabled with a tooltip hint explaining what's needed.
-private struct WelcomeNavigation: View {
+struct WelcomeNavigation: View {
     var canGoBack: Bool = false
     var canContinue: Bool = true
     var disabledHint: String? = nil
@@ -357,58 +314,6 @@ private struct WelcomeNavigation: View {
             .disabled(!canContinue)
             .help(canContinue ? "" : (disabledHint ?? ""))
         }
-    }
-}
-
-/// One permission row in the permissions step. Shows a live indicator + Grant button.
-private struct WelcomePermissionRow: View {
-    let title: String
-    let subtitle: String
-    let granted: Bool
-    let action: () -> Void
-    var isOptional: Bool = false
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: granted ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 16))
-                .foregroundStyle(granted ? .green : .secondary)
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(title)
-                        .font(.system(size: 13, weight: .medium))
-
-                    if isOptional {
-                        Text("Optional")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1)
-                            .background(.quaternary, in: Capsule())
-                    }
-                }
-
-                Text(subtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 0)
-
-            if granted {
-                Text("Granted")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.green)
-            } else {
-                Button("Grant") {
-                    action()
-                }
-                .controlSize(.small)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
     }
 }
 

@@ -105,19 +105,23 @@ struct FocusSnapshotResolver {
         // is weak, search deeper for a leaf with exact caret data.
         let caretRect: CGRect
         let caretSource: String
+        let observedCharWidth: CGFloat?
         if let primary = resolvedCandidate.caretRect,
            resolvedCandidate.caretQuality == .exact || resolvedCandidate.caretQuality == .derived {
             caretRect = primary
             caretSource = "\(resolvedCandidate.caretQuality!.label) primary"
+            observedCharWidth = resolvedCandidate.observedCharWidth
         } else if let deepResult = findDeepGeometrySource(
             from: focusedElement,
             cocoaAnchorFrame: resolvedCandidate.inputFrameRect
         ) {
             caretRect = deepResult.rect
             caretSource = "\(deepResult.quality.label) deep"
+            observedCharWidth = deepResult.observedCharWidth
         } else if let primary = resolvedCandidate.caretRect {
             caretRect = primary
             caretSource = "\(resolvedCandidate.caretQuality?.label ?? "unknown") primary-fallback"
+            observedCharWidth = resolvedCandidate.observedCharWidth
         } else {
             return FocusSnapshot(
                 applicationName: applicationName,
@@ -141,6 +145,7 @@ struct FocusSnapshotResolver {
             caretRect: caretRect,
             inputFrameRect: resolvedCandidate.inputFrameRect,
             caretSource: caretSource,
+            observedCharWidth: observedCharWidth,
             precedingText: nsValue.substring(to: safeSelectionLocation),
             trailingText: nsValue.substring(from: trailingStart),
             selection: selection,
@@ -329,6 +334,7 @@ struct FocusSnapshotResolver {
             selection: selection,
             caretRect: caretRect,
             caretQuality: caretQuality,
+            observedCharWidth: caretResult?.observedCharWidth,
             inputFrameRect: inputFrameRect,
             isSecure: isSecure,
             resolverCandidate: resolverCandidate
@@ -459,6 +465,7 @@ private struct AXFocusCandidate {
     let selection: NSRange?
     let caretRect: CGRect?
     let caretQuality: CaretGeometryQuality?
+    let observedCharWidth: CGFloat?
     let inputFrameRect: CGRect?
     let isSecure: Bool
     let resolverCandidate: FocusCapabilityCandidate

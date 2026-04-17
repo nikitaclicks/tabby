@@ -104,6 +104,9 @@ struct FocusedInputSnapshot: Equatable {
     let caretRect: CGRect
     let inputFrameRect: CGRect?
     let caretSource: String
+    /// Average character width in points observed from AX child frame measurements.
+    /// Nil when the caret was resolved via BoundsForRange (no child walk needed).
+    let observedCharWidth: CGFloat?
     let precedingText: String
     let trailingText: String
     let selection: NSRange

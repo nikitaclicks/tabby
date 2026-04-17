@@ -40,25 +40,19 @@ enum LlamaPromptRenderer {
         customAIInstructions: String?
     ) -> String {
         var sections = [
-            "You are Tabby's inline autocomplete engine for a macOS text field.",
-            "",
-            "Rules (highest priority):",
+            "You are an invisible, lightning-fast auto-completion engine running on macOS. Your ONLY job is to predict the exact next sequence of characters or words based on the provided text context.",
+            "Rules:",
             "Continue the user's existing text at the caret.",
-            "Do not answer the user as an assistant.",
-            "Return exactly one continuation fragment.",
+            "NEVER repeat the text that comes before the cursor.",
             completionLengthInstruction,
-            "Do not repeat text already present before the caret.",
-            "Do not add labels, bullets, markdown, quotes, or explanation.",
-            "Match the surrounding tone, punctuation, and language."
+            "Infer the context from the input and match the tone perfectly.",
+            "Output ONLY the predicted continuation text.",
         ]
 
         sections.append(contentsOf: CustomAIInstructionFormatter.promptSectionLines(from: customAIInstructions))
         sections.append(contentsOf: [
-            "App: \(applicationName)",
             "Text before caret:",
-            prefixText,
-            "",
-            "Continuation:"
+            prefixText
         ])
 
         return sections.joined(separator: "\n")

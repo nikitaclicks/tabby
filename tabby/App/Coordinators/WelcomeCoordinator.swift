@@ -10,6 +10,7 @@ import SwiftUI
 @MainActor
 final class WelcomeCoordinator: NSObject, NSWindowDelegate {
     private let permissionManager: PermissionManager
+    private let permissionGuidanceController: PermissionGuidanceController
     private let runtimeModel: RuntimeBootstrapModel
     private let modelDownloadManager: ModelDownloadManager
     private let suggestionSettings: SuggestionSettingsModel
@@ -22,6 +23,7 @@ final class WelcomeCoordinator: NSObject, NSWindowDelegate {
 
     init(
         permissionManager: PermissionManager,
+        permissionGuidanceController: PermissionGuidanceController,
         runtimeModel: RuntimeBootstrapModel,
         modelDownloadManager: ModelDownloadManager,
         suggestionSettings: SuggestionSettingsModel,
@@ -29,6 +31,7 @@ final class WelcomeCoordinator: NSObject, NSWindowDelegate {
         userDefaults: UserDefaults = .standard
     ) {
         self.permissionManager = permissionManager
+        self.permissionGuidanceController = permissionGuidanceController
         self.runtimeModel = runtimeModel
         self.modelDownloadManager = modelDownloadManager
         self.suggestionSettings = suggestionSettings
@@ -63,6 +66,7 @@ final class WelcomeCoordinator: NSObject, NSWindowDelegate {
                 modelDownloadManager: modelDownloadManager,
                 suggestionSettings: suggestionSettings,
                 foundationModelAvailabilityService: foundationModelAvailabilityService,
+                permissionGuidanceController: permissionGuidanceController,
                 onDismiss: { [weak self] in
                     self?.dismissWelcome()
                 }
@@ -70,7 +74,7 @@ final class WelcomeCoordinator: NSObject, NSWindowDelegate {
         )
 
         let window = NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 480, height: 420),
+            contentRect: CGRect(x: 0, y: 0, width: 520, height: 440),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -100,11 +104,13 @@ final class WelcomeCoordinator: NSObject, NSWindowDelegate {
         }
 
         if closingWindow == welcomeWindowController?.window {
+            permissionGuidanceController.dismiss()
             welcomeWindowController = nil
         }
     }
 
     private func dismissWelcome() {
+        permissionGuidanceController.dismiss()
         welcomeWindowController?.close()
     }
 }
