@@ -2,12 +2,14 @@ import AppKit
 import SwiftUI
 
 /// File overview:
-/// Renders the onboarding step that teaches users how to grant Tabby's required permissions.
+/// Renders the onboarding permission step with a centered, card-based layout.
 ///
-/// This view exists as its own file because the permission step now owns more than a plain list of
-/// buttons. It coordinates measured source frames for the launch animation, explains the guided
-/// flow, and stays subscribed to live permission state. Pulling that complexity out of
-/// `WelcomeView` keeps the wizard readable and makes the permission subsystem easier to evolve.
+/// Each permission is a glass-material card with an icon badge, title, short description, and
+/// an Allow button or Done state. The view stays subscribed to live permission state so cards
+/// update in real time as the user grants access through System Settings.
+///
+/// Only the two required permissions (Accessibility, Input Monitoring) are shown during
+/// onboarding. Screen Recording is deprecated and relegated to settings.
 struct WelcomePermissionStepView: View {
     @ObservedObject var permissionManager: PermissionManager
 
@@ -15,26 +17,27 @@ struct WelcomePermissionStepView: View {
     let onBack: () -> Void
     let onContinue: () -> Void
 
+    /// Only show the permissions that matter for core autocomplete during onboarding.
+    /// Screen Recording is deprecated and just adds noise to the first-run experience.
+    private var onboardingPermissions: [TabbyPermissionKind] {
+        TabbyPermissionKind.allCases.filter(\.isRequiredForAutocomplete)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            WelcomeStepHeader(
-                title: "Grant Permissions",
-                subtitle: "Tabby needs Accessibility and Input Monitoring before it can read your typing context and accept completions with Tab."
-            )
+        VStack(spacing: 28) {
+            VStack(spacing: 8) {
+                Text("Enable tabby")
+                    .font(.system(size: 24, weight: .semibold, design: .rounded))
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Use Guide Me for the required permissions. Tabby opens the right privacy pane and pins a drag helper over the exact list macOS expects.")
-                    .font(.system(size: 12, design: .rounded))
+                Text("Grant permissions so tabby can\nread your text and accept completions.")
+                    .font(.system(size: 14, design: .rounded))
                     .foregroundStyle(.secondary)
-
-                Text("If System Settings opens behind another window, bring it to the front and the helper will snap into place.")
-                    .font(.system(size: 11, design: .rounded))
-                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
             }
 
-            VStack(spacing: 12) {
-                ForEach(TabbyPermissionKind.allCases) { permission in
-                    WelcomePermissionGuideCard(
+            VStack(spacing: 10) {
+                ForEach(onboardingPermissions) { permission in
+                    PermissionCard(
                         permission: permission,
                         granted: permissionManager.isGranted(permission),
                         permissionGuidanceController: permissionGuidanceController
@@ -43,26 +46,27 @@ struct WelcomePermissionStepView: View {
             }
 
             WelcomeNavigation(
-                canGoBack: true,
+                canGoBack: false,
                 canContinue: permissionManager.requiredPermissionsGranted,
-                disabledHint: "Grant Accessibility and Input Monitoring to continue.",
+                disabledHint: "Grant both permissions to continue.",
                 onBack: onBack,
                 onContinue: onContinue
             )
         }
         .onDisappear {
-            // The helper is only relevant while this step is on screen. Dismissing here avoids
-            // leaving an orphaned overlay floating over System Settings after the user advances.
             permissionGuidanceController.dismiss()
         }
     }
 }
 
-/// One permission card inside the onboarding step.
+// MARK: - Permission Card
+
+/// One permission row rendered as a glass-material card.
 ///
-/// The card owns its measured button frame because that is view-specific state: the service wants
-/// a source rect for the launch animation, but it should not know how SwiftUI laid out the row.
-private struct WelcomePermissionGuideCard: View {
+/// The card measures its own button frame in screen coordinates because the permission guidance
+/// controller needs a global rect to anchor its drag-helper animation. That screen-space concern
+/// stays here in the view rather than leaking into the controller.
+private struct PermissionCard: View {
     let permission: TabbyPermissionKind
     let granted: Bool
     let permissionGuidanceController: PermissionGuidanceController
@@ -70,39 +74,27 @@ private struct WelcomePermissionGuideCard: View {
     @State private var actionButtonFrame = CGRect.zero
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Image(systemName: granted ? "checkmark.circle.fill" : "hand.tap.fill")
-                .font(.system(size: 18))
-                .foregroundStyle(granted ? Color.green : Color.accentColor)
-                .frame(width: 22, height: 22)
+        HStack(spacing: 14) {
+            PermissionIconBadge(
+                systemImage: permission.systemImageName,
+                granted: granted
+            )
 
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Text(permission.title)
-                        .font(.system(size: 14, weight: .semibold))
-
-                    if !permission.isRequiredForAutocomplete {
-                        WelcomePermissionBadge(text: "Optional")
-                    }
-                }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(permission.title)
+                    .font(.system(size: 14, weight: .medium))
 
                 Text(permission.onboardingSubtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-
-                if !granted {
-                    Text(permission.guidanceHint)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                }
             }
 
             Spacer(minLength: 0)
 
             if granted {
-                WelcomePermissionStatusPill(text: "Granted", color: .green)
+                PermissionDoneBadge()
             } else {
-                Button(actionTitle) {
+                Button("Allow") {
                     permissionGuidanceController.requestAccess(
                         for: permission,
                         sourceFrameInScreen: actionButtonFrame
@@ -113,55 +105,58 @@ private struct WelcomePermissionGuideCard: View {
                 .background(ScreenFrameReader(frameInScreen: $actionButtonFrame))
             }
         }
-        .padding(16)
+        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.quaternary.opacity(0.5))
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.regularMaterial)
+                .shadow(color: .black.opacity(0.06), radius: 2, y: 1)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(.white.opacity(0.08), lineWidth: 0.5)
         )
     }
+}
 
-    private var actionTitle: String {
-        switch permission.guidanceStyle {
-        case .guidedOverlay:
-            "Guide Me"
-        case .settingsOnly:
-            "Open Settings"
+// MARK: - Small Components
+
+/// Tinted SF Symbol inside a rounded badge, similar to Apple's settings icon style.
+private struct PermissionIconBadge: View {
+    let systemImage: String
+    let granted: Bool
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(granted ? Color.green.opacity(0.12) : Color.accentColor.opacity(0.12))
+
+            Image(systemName: systemImage)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(granted ? .green : .accentColor)
         }
+        .frame(width: 32, height: 32)
     }
 }
 
-private struct WelcomePermissionBadge: View {
-    let text: String
-
+/// Green checkmark with "Done" label shown after a permission is granted.
+private struct PermissionDoneBadge: View {
     var body: some View {
-        Text(text)
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(.quaternary, in: Capsule())
-    }
-}
+        HStack(spacing: 4) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 11, weight: .semibold))
 
-private struct WelcomePermissionStatusPill: View {
-    let text: String
-    let color: Color
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(color)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(color.opacity(0.12), in: Capsule())
+            Text("Done")
+                .font(.system(size: 12, weight: .medium))
+        }
+        .foregroundStyle(.green)
     }
 }
 
 /// SwiftUI wrapper around a tiny AppKit view that reports its bounds in screen coordinates.
 ///
-/// `GeometryReader` knows about local layout, but the permission helper animation needs a global
-/// screen rect because the destination overlay lives in a separate `NSPanel`.
+/// The permission guidance animation needs a global screen rect to anchor the drag helper overlay
+/// on a separate NSPanel. GeometryReader only knows local layout, so we bridge through AppKit.
 private struct ScreenFrameReader: NSViewRepresentable {
     @Binding var frameInScreen: CGRect
 

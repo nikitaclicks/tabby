@@ -39,14 +39,25 @@ enum TabbyPermissionKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    var systemImageName: String {
+        switch self {
+        case .accessibility:
+            "accessibility"
+        case .inputMonitoring:
+            "keyboard.fill"
+        case .screenRecording:
+            "rectangle.dashed.badge.record"
+        }
+    }
+
     var onboardingSubtitle: String {
         switch self {
         case .accessibility:
-            "Read the focused field and resolve the caret position."
+            "Read text fields and caret position."
         case .inputMonitoring:
-            "Observe typing and let Tab accept completions globally."
+            "Detect typing and accept with Tab."
         case .screenRecording:
-            "Optional. Reserved for deprecated screenshot and OCR experiments."
+            "Optional. Not required for autocomplete."
         }
     }
 

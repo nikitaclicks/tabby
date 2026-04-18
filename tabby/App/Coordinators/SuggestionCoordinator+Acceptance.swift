@@ -240,8 +240,8 @@ extension SuggestionCoordinator {
             // shift after every Tab, the overlay can visibly march away from the real caret before
             // AX catches up. Biasing this branch toward under-shooting keeps the UI responsive
             // without compounding the resolver's uncertainty.
-            let conservativeCap: CGFloat = 18
-            chunkWidth = min(max(measuredWidth * 0.35, 6), conservativeCap)
+            let conservativeCap = max(CGFloat(34), CGFloat(insertedChunk.count) * 13)
+            chunkWidth = min(max(measuredWidth * 0.91, 14), conservativeCap)
         }
 
         return CGRect(

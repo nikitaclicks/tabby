@@ -74,12 +74,12 @@ final class WelcomeCoordinator: NSObject, NSWindowDelegate {
         )
 
         let window = NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 520, height: 440),
+            contentRect: CGRect(x: 0, y: 0, width: 540, height: 480),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        window.title = "Welcome to Tabby"
+        window.title = "Welcome to tabby"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true

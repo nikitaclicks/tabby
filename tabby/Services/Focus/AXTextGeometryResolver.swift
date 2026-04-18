@@ -145,8 +145,8 @@ struct AXTextGeometryResolver {
     /// than the hard-coded guess or whose prefix spans multiple lines. We now:
     /// 1. Measure only the current line fragment after the last newline.
     /// 2. Use a system-font width estimate as a fallback proxy for rendered width.
-    /// 3. Cap that estimate with a smaller per-character ceiling so we bias toward under-shooting
-    ///    instead of marching the overlay past the real caret.
+    /// 3. Keep a loose per-character ceiling as a guardrail, but let the measured current-line
+    ///    width do most of the work so the estimate does not visibly lag behind larger editors.
     private func conservativeEstimatedCaretX(
         in cocoaRect: CGRect,
         text: String,
@@ -159,15 +159,15 @@ struct AXTextGeometryResolver {
         let lineNSString = currentLinePrefix as NSString
 
         let measuredWidth = lineNSString.size(withAttributes: [
-            .font: NSFont.systemFont(ofSize: 14)
+            .font: NSFont.systemFont(ofSize: 15)
         ]).width
-        let perCharacterCeiling: CGFloat = 6.0
-        let conservativeWidth = min(
+        let perCharacterCeiling: CGFloat = 13.3
+        let estimatedWidth = min(
             measuredWidth,
             CGFloat(lineNSString.length) * perCharacterCeiling
         )
 
-        return cocoaRect.minX + conservativeWidth
+        return cocoaRect.minX + estimatedWidth
     }
 
     /// Walks AXStaticText children of a text container to find the one containing the caret,
