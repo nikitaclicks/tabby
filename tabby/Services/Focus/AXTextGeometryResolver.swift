@@ -35,7 +35,9 @@ struct AXTextGeometryResolver {
     /// screenshot cropping and field-level diagnostics. This stays separate from caret resolution
     /// because not every consumer wants the same geometry contract.
     func resolveInputFrameRect(for element: AXUIElement) -> CGRect? {
-        guard let frame = AXHelper.rectValue(for: "AXFrame" as CFString, on: element), !frame.isEmpty else {
+        guard let frame = AXHelper.rectValue(for: "AXFrame" as CFString, on: element),
+            !frame.isEmpty
+        else {
             return nil
         }
 
@@ -55,11 +57,12 @@ struct AXTextGeometryResolver {
     ) -> CaretGeometryResult? {
         // Branch 1: Zero-length BoundsForRange at the caret position — ideal case.
         if supportsBoundsForRange,
-           let rect = AXHelper.parameterizedRectValue(
-               for: kAXBoundsForRangeParameterizedAttribute as CFString,
-               range: NSRange(location: selection.location, length: 0),
-               on: element
-           ), !rect.isEmpty {
+            let rect = AXHelper.parameterizedRectValue(
+                for: kAXBoundsForRangeParameterizedAttribute as CFString,
+                range: NSRange(location: selection.location, length: 0),
+                on: element
+            ), !rect.isEmpty
+        {
             let cocoaRect = AXHelper.validatedCocoaTextRect(
                 fromAccessibilityRect: rect,
                 anchorFrame: cocoaAnchorFrame
@@ -86,18 +89,20 @@ struct AXTextGeometryResolver {
 
         // Branch 2: BoundsForRange on the character before the caret, then shift to its trailing edge.
         if supportsBoundsForRange,
-           selection.location > 0,
-           let rect = AXHelper.parameterizedRectValue(
-               for: kAXBoundsForRangeParameterizedAttribute as CFString,
-               range: NSRange(location: selection.location - 1, length: 1),
-               on: element
-           ), !rect.isEmpty {
+            selection.location > 0,
+            let rect = AXHelper.parameterizedRectValue(
+                for: kAXBoundsForRangeParameterizedAttribute as CFString,
+                range: NSRange(location: selection.location - 1, length: 1),
+                on: element
+            ), !rect.isEmpty
+        {
             let cocoaRect = AXHelper.validatedCocoaTextRect(
                 fromAccessibilityRect: rect,
                 anchorFrame: cocoaAnchorFrame
             )
             return CaretGeometryResult(
-                rect: CGRect(x: cocoaRect.maxX, y: cocoaRect.minY, width: 2, height: cocoaRect.height),
+                rect: CGRect(
+                    x: cocoaRect.maxX, y: cocoaRect.minY, width: 2, height: cocoaRect.height),
                 quality: .derived
             )
         }
@@ -118,7 +123,8 @@ struct AXTextGeometryResolver {
 
         // Branch 3: AXFrame fallback — no text-range data available, estimate from element bounds.
         if supportsFrame,
-           let frame = AXHelper.rectValue(for: "AXFrame" as CFString, on: element), !frame.isEmpty {
+            let frame = AXHelper.rectValue(for: "AXFrame" as CFString, on: element), !frame.isEmpty
+        {
             let cocoaRect = AXHelper.cocoaRect(fromAccessibilityRect: frame)
             if cocoaRect.width > 10, let text = textValue {
                 let estimatedX = conservativeEstimatedCaretX(
@@ -128,7 +134,8 @@ struct AXTextGeometryResolver {
                 )
                 let clampedX = min(estimatedX, cocoaRect.maxX)
                 return CaretGeometryResult(
-                    rect: CGRect(x: clampedX, y: cocoaRect.minY, width: 2, height: cocoaRect.height),
+                    rect: CGRect(
+                        x: clampedX, y: cocoaRect.minY, width: 2, height: cocoaRect.height),
                     quality: .estimated
                 )
             }
@@ -145,8 +152,8 @@ struct AXTextGeometryResolver {
     /// than the hard-coded guess or whose prefix spans multiple lines. We now:
     /// 1. Measure only the current line fragment after the last newline.
     /// 2. Use a system-font width estimate as a fallback proxy for rendered width.
-    /// 3. Keep a loose per-character ceiling as a guardrail, but let the measured current-line
-    ///    width do most of the work so the estimate does not visibly lag behind larger editors.
+    /// 3. Apply a modest upward bias because this fallback routinely underestimates larger editors
+    ///    that only expose `AXFrame`, then keep a loose per-character ceiling as a guardrail.
     private func conservativeEstimatedCaretX(
         in cocoaRect: CGRect,
         text: String,
@@ -158,10 +165,12 @@ struct AXTextGeometryResolver {
         let currentLinePrefix = prefix.components(separatedBy: .newlines).last ?? prefix
         let lineNSString = currentLinePrefix as NSString
 
-        let measuredWidth = lineNSString.size(withAttributes: [
-            .font: NSFont.systemFont(ofSize: 15)
-        ]).width
-        let perCharacterCeiling: CGFloat = 13.3
+        let estimatedWidthBias: CGFloat = 1.1
+        let measuredWidth =
+            lineNSString.size(withAttributes: [
+                .font: NSFont.systemFont(ofSize: 15)
+            ]).width * estimatedWidthBias
+        let perCharacterCeiling: CGFloat = 13.3 * estimatedWidthBias
         let estimatedWidth = min(
             measuredWidth,
             CGFloat(lineNSString.length) * perCharacterCeiling
@@ -188,9 +197,11 @@ struct AXTextGeometryResolver {
             let role = AXHelper.stringValue(for: kAXRoleAttribute as CFString, on: child)
             guard role == kAXStaticTextRole as String else { continue }
             guard let text = AXHelper.stringValue(for: kAXValueAttribute as CFString, on: child),
-                  !text.isEmpty else { continue }
+                !text.isEmpty
+            else { continue }
             guard let frame = AXHelper.rectValue(for: "AXFrame" as CFString, on: child),
-                  !frame.isEmpty else { continue }
+                !frame.isEmpty
+            else { continue }
             textRuns.append((text, frame))
         }
 
@@ -219,7 +230,8 @@ struct AXTextGeometryResolver {
                 let cocoaFrame = AXHelper.cocoaRect(fromAccessibilityRect: run.frame)
                 let caretX = cocoaFrame.minX + fraction * cocoaFrame.width
                 return CaretGeometryResult(
-                    rect: CGRect(x: caretX, y: cocoaFrame.minY, width: 2, height: cocoaFrame.height),
+                    rect: CGRect(
+                        x: caretX, y: cocoaFrame.minY, width: 2, height: cocoaFrame.height),
                     quality: .derived,
                     observedCharWidth: charWidth
                 )

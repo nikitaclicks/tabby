@@ -238,10 +238,18 @@ extension SuggestionCoordinator {
         case .estimated:
             // Estimated caret geometry is already low-confidence. If we apply the full predicted
             // shift after every Tab, the overlay can visibly march away from the real caret before
-            // AX catches up. Biasing this branch toward under-shooting keeps the UI responsive
-            // without compounding the resolver's uncertainty.
-            let conservativeCap = max(CGFloat(34), CGFloat(insertedChunk.count) * 13)
-            chunkWidth = min(max(measuredWidth * 0.91, 14), conservativeCap)
+            // AX catches up. We still keep this path separate from trusted geometry, but we apply
+            // an explicit upward bias here because the previous tuning was visibly lagging in
+            // larger editors that only expose coarse AXFrame fallbacks.
+            let estimatedPredictionBias: CGFloat = 1.5
+            let conservativeCap = max(
+                CGFloat(34) * estimatedPredictionBias,
+                CGFloat(insertedChunk.count) * 13 * estimatedPredictionBias
+            )
+            chunkWidth = min(
+                max(measuredWidth * 0.91 * estimatedPredictionBias, 14 * estimatedPredictionBias),
+                conservativeCap
+            )
         }
 
         return CGRect(
