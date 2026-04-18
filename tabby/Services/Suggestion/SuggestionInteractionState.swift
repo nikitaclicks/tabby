@@ -25,6 +25,13 @@ final class SuggestionInteractionState {
         contextBuffer.currentContext
     }
 
+    /// Exposes the higher-level meaning of `pendingInsertionConsumedCount` without leaking the
+    /// sentinel's storage detail to the coordinator. When this is true, Tabby has already inserted
+    /// suggestion text and is waiting for Accessibility to publish a matching live snapshot.
+    var isAwaitingPostInsertionSync: Bool {
+        pendingInsertionConsumedCount != nil
+    }
+
     func materializeContext(from snapshot: FocusedInputSnapshot) -> FocusedInputContext {
         contextBuffer.materialize(from: snapshot)
     }

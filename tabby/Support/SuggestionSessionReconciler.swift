@@ -52,6 +52,16 @@ enum SuggestionSessionReconciler {
         with liveContext: FocusedInputContext,
         pendingInsertionConsumedCount: Int?
     ) -> SuggestionSessionReconciliation {
+        let isAwaitingInsertedTextSync = pendingInsertionConsumedCount == session.consumedCharacterCount
+
+        func tolerateTransientPostInsertionLag() -> SuggestionSessionReconciliation {
+            .valid(
+                session: session,
+                advancement: nil,
+                nextPendingInsertionConsumedCount: pendingInsertionConsumedCount
+            )
+        }
+
         // Process-level identity check instead of AX element identity. Chrome recycles AX
         // node tokens between polls, making CFHash-based elementIdentifier unstable. The text
         // guards below catch intra-process field switches via content divergence.
@@ -64,10 +74,26 @@ enum SuggestionSessionReconciler {
         }
 
         guard liveContext.trailingText == session.baseContext.trailingText else {
+            // Chromium editors can briefly publish a selection/caret update before their
+            // surrounding text snapshot catches up. Right after Tab insertion that makes the
+            // trailing-text slice look changed even though the active suggestion tail is still
+            // valid. We allow that transient mismatch only while the post-insertion sentinel is
+            // active and the prefix before the caret still anchors to the same field content.
+            if isAwaitingInsertedTextSync,
+               liveContext.precedingText.hasPrefix(session.baseContext.precedingText)
+            {
+                return tolerateTransientPostInsertionLag()
+            }
             return .invalid("Overlay hidden because text after the caret changed.")
         }
 
         guard liveContext.precedingText.hasPrefix(session.baseContext.precedingText) else {
+            // The inverse Chromium race can also happen: the trailing text is already stable, but
+            // the prefix before the caret still reflects the pre-insertion snapshot. In that case
+            // we again prefer to wait for AX to settle instead of eagerly killing the session.
+            if isAwaitingInsertedTextSync {
+                return tolerateTransientPostInsertionLag()
+            }
             return .invalid("Overlay hidden because text before the caret no longer matches the suggestion anchor.")
         }
 
@@ -76,12 +102,8 @@ enum SuggestionSessionReconciler {
         guard session.fullText.hasPrefix(consumedSuffix) else {
             // If we just inserted via Tab, AX may still show stale text. Trust the sentinel
             // for one reconciliation cycle instead of invalidating the whole session.
-            if let pendingInsertionConsumedCount, pendingInsertionConsumedCount == session.consumedCharacterCount {
-                return .valid(
-                    session: session,
-                    advancement: nil,
-                    nextPendingInsertionConsumedCount: pendingInsertionConsumedCount
-                )
+            if isAwaitingInsertedTextSync {
+                return tolerateTransientPostInsertionLag()
             }
 
             return .invalid("Overlay hidden because typed text diverged from the active suggestion.")
@@ -96,12 +118,8 @@ enum SuggestionSessionReconciler {
 
         guard consumedSuffix.count >= session.consumedCharacterCount else {
             // Same AX lag protection: if we just Tab-inserted, the preceding text hasn't updated yet.
-            if let pendingInsertionConsumedCount, pendingInsertionConsumedCount == session.consumedCharacterCount {
-                return .valid(
-                    session: session,
-                    advancement: nil,
-                    nextPendingInsertionConsumedCount: pendingInsertionConsumedCount
-                )
+            if isAwaitingInsertedTextSync {
+                return tolerateTransientPostInsertionLag()
             }
 
             return .invalid("Overlay hidden because the active suggestion was partially undone.")

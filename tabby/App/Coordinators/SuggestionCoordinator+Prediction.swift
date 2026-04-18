@@ -247,6 +247,12 @@ extension SuggestionCoordinator {
         }
 
         guard case .supported = snapshot.capability, let rawContext = snapshot.context else {
+            // Browser-based editors can transiently report "no usable text field" for a single AX
+            // poll right after we synthesize accepted text. During that narrow post-insertion sync
+            // window, keep the active session alive and wait for the next settled snapshot.
+            if interactionState.isAwaitingPostInsertionSync {
+                return
+            }
             invalidateActiveSuggestion(reason: snapshot.capability.summary)
             return
         }
