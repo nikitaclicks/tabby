@@ -54,6 +54,7 @@ extension SuggestionCoordinator {
 
         if interactionState.hasFocusedElementChanged(comparedTo: focusedContext) {
             cancelPredictionWork()
+            resetCachedGenerationContext()
             clearSuggestion(clearDiagnostics: true)
             hideOverlay(reason: "Overlay hidden because the focused field changed.")
             state = .idle
