@@ -62,7 +62,7 @@ Everything runs on-device. No hosted API, no cloud round-trip.
 
 ## Engines
 
-**Apple Intelligence** — uses Apple's on-device `FoundationModels` runtime on macOS 26 or later. No download required. Availability depends on your Mac; tabby checks at runtime and explains when this engine is unavailable.
+**Apple Intelligence** —> uses Apple's on-device `FoundationModels` runtime on macOS 26 or later. No download required. Availability depends on your Mac; tabby checks at runtime and explains when this engine is unavailable.
 
 **Open Source**: runs local GGUF models in-process through llama.cpp via `llama.swift`. Built-in downloadable models:
 
