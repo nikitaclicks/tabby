@@ -335,7 +335,11 @@ struct SettingsView: View {
     @ViewBuilder
     private var uninstallSection: some View {
         Section("Uninstall") {
-            Text("Drag tabby.app from Applications to the Trash. To remove leftover data, also delete ~/Library/Application Support/tabby. Privacy permissions can only be revoked in System Settings → Privacy & Security.")
+            Text(
+                "Drag tabby.app from Applications to the Trash. "
+                + "To remove leftover data, also delete ~/Library/Application Support/tabby. "
+                + "Privacy permissions can only be revoked in System Settings → Privacy & Security."
+            )
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
