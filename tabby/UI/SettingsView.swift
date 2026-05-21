@@ -182,16 +182,10 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Stepper(
-                "Focus Poll Interval: \(suggestionSettings.focusPollIntervalMilliseconds)ms",
-                value: focusPollIntervalMillisecondsBinding,
-                in: 10...500,
-                step: 10
-            )
-
-            Text("How often Tabby checks for focus and caret changes. Lower values detect changes faster but use more CPU.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            // Focus poll interval is intentionally hidden from the UI. The default (50 ms)
+            // is tuned for the best balance of responsiveness and CPU usage. Exposing it
+            // invites misconfiguration without meaningful benefit. The backing setting and
+            // UserDefaults plumbing remain so we can re-surface it later if needed.
         }
     }
 
@@ -481,12 +475,15 @@ struct SettingsView: View {
         )
     }
 
-    private var focusPollIntervalMillisecondsBinding: Binding<Int> {
-        Binding(
-            get: { suggestionSettings.focusPollIntervalMilliseconds },
-            set: { suggestionSettings.setFocusPollIntervalMilliseconds($0) }
-        )
-    }
+    // focusPollIntervalMillisecondsBinding removed — the poll interval stepper is hidden from
+    // the UI (see performanceSection). Binding kept commented for easy restoration:
+    //
+    // private var focusPollIntervalMillisecondsBinding: Binding<Int> {
+    //     Binding(
+    //         get: { suggestionSettings.focusPollIntervalMilliseconds },
+    //         set: { suggestionSettings.setFocusPollIntervalMilliseconds($0) }
+    //     )
+    // }
 
     /// The color picker always needs a concrete color. When the user has not picked one yet we feed
     /// it the current automatic fallback so the control still previews something sensible. The first
