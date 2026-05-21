@@ -10,6 +10,7 @@ import Foundation
 enum SuggestionEngineKind: String, CaseIterable, Equatable, Hashable, Sendable, Identifiable {
     case appleIntelligence
     case llamaOpenSource
+    case openAICompatible
 
     var id: String { rawValue }
 
@@ -19,16 +20,59 @@ enum SuggestionEngineKind: String, CaseIterable, Equatable, Hashable, Sendable, 
             return "Apple Intelligence [BETA]"
         case .llamaOpenSource:
             return "Open Source"
+        case .openAICompatible:
+            return "OpenAI-Compatible API"
         }
     }
 
     var supportsLocalModelManagement: Bool {
         switch self {
-        case .appleIntelligence:
+        case .appleIntelligence, .openAICompatible:
             return false
         case .llamaOpenSource:
             return true
         }
+    }
+}
+
+/// Provider preset for the OpenAI-compatible HTTP engine. The preset drives the default
+/// base URL and the Keychain account namespace so users can keep separate keys per provider
+/// (e.g. one for OpenRouter, none for a local mlx-lm server).
+enum OpenAIPreset: String, CaseIterable, Equatable, Hashable, Sendable, Identifiable {
+    case localMLX
+    case openRouter
+    case custom
+
+    var id: String { rawValue }
+
+    var displayLabel: String {
+        switch self {
+        case .localMLX:
+            return "Local (mlx-lm / Ollama)"
+        case .openRouter:
+            return "OpenRouter"
+        case .custom:
+            return "Custom"
+        }
+    }
+
+    /// Default `Base URL` (without trailing `/chat/completions`) prefilled when the user picks
+    /// this preset.
+    var defaultBaseURL: String {
+        switch self {
+        case .localMLX:
+            return "http://127.0.0.1:8080/v1"
+        case .openRouter:
+            return "https://openrouter.ai/api/v1"
+        case .custom:
+            return ""
+        }
+    }
+
+    /// Keychain account name. Kept stable per provider so switching presets back and forth
+    /// preserves each provider's key without manual re-entry.
+    var keychainAccount: String {
+        rawValue
     }
 }
 

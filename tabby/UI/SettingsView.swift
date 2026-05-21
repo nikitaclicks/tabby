@@ -25,6 +25,12 @@ struct SettingsView: View {
 
     @State private var pendingDeletionModel: RuntimeModelOption?
 
+    /// Local-only mirror of the API key text field. The actual secret lives in Keychain; this
+    /// `@State` exists so SecureField has a binding to bind to and so the user can type
+    /// without persisting on every keystroke.
+    @State private var openAIAPIKeyDraft: String = ""
+    @State private var openAIKeyStatusMessage: String?
+
     var body: some View {
         Form {
             settingsHeader
@@ -150,6 +156,8 @@ struct SettingsView: View {
                     Text(foundationModelAvailabilityService.userVisibleMessage)
                         .foregroundStyle(.secondary)
                 }
+            } else if suggestionSettings.selectedEngine == .openAICompatible {
+                openAIEngineFields
             } else {
                 LabeledContent("Runtime") {
                     Text(runtimeModel.state.summary)
@@ -163,6 +171,61 @@ struct SettingsView: View {
                         .tag(preset)
                 }
             }
+        }
+    }
+
+    /// Fields shown inline inside the autocomplete section when the OpenAI-compatible engine is
+    /// the active backend. We keep them in this section (rather than a dedicated section) so the
+    /// user discovers them right next to the Engine picker that selects the backend.
+    @ViewBuilder
+    private var openAIEngineFields: some View {
+        Picker("Provider", selection: openAIPresetBinding) {
+            ForEach(OpenAIPreset.allCases) { preset in
+                Text(preset.displayLabel).tag(preset)
+            }
+        }
+
+        TextField("Base URL", text: openAIBaseURLBinding, prompt: Text("http://127.0.0.1:8080/v1"))
+            .textFieldStyle(.roundedBorder)
+            .autocorrectionDisabled(true)
+
+        TextField("Model", text: openAIModelNameBinding, prompt: Text("mlx-community/Llama-3.2-3B-Instruct-4bit"))
+            .textFieldStyle(.roundedBorder)
+            .autocorrectionDisabled(true)
+
+        HStack {
+            SecureField(
+                suggestionSettings.openAIPreset == .openRouter ? "API Key" : "API Key (optional)",
+                text: $openAIAPIKeyDraft,
+                prompt: Text("sk-…")
+            )
+            .textFieldStyle(.roundedBorder)
+
+            Button("Save") {
+                saveOpenAIAPIKey()
+            }
+            .disabled(openAIAPIKeyDraft.isEmpty && suggestionSettings.openAIAPIKey() == nil)
+
+            if suggestionSettings.openAIAPIKey() != nil {
+                Button("Clear") {
+                    openAIAPIKeyDraft = ""
+                    saveOpenAIAPIKey()
+                }
+            }
+        }
+
+        if let message = openAIKeyStatusMessage {
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if suggestionSettings.openAIAPIKey() != nil {
+            Text("API key stored in Keychain.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if suggestionSettings.openAIPreset == .localMLX {
+            Text("Local servers like mlx-lm and Ollama usually do not need a key.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -512,6 +575,46 @@ struct SettingsView: View {
                 suggestionSettings.selectEngine(engine)
             }
         )
+    }
+
+    private var openAIPresetBinding: Binding<OpenAIPreset> {
+        Binding(
+            get: { suggestionSettings.openAIPreset },
+            set: { preset in
+                suggestionSettings.selectOpenAIPreset(preset)
+                // Surface the key the user previously stored under this provider, if any. We do
+                // not echo it back into the SecureField (Keychain is one-way); we just clear the
+                // staged draft so the existing key is preserved.
+                openAIAPIKeyDraft = ""
+                openAIKeyStatusMessage = nil
+            }
+        )
+    }
+
+    private var openAIBaseURLBinding: Binding<String> {
+        Binding(
+            get: { suggestionSettings.openAIBaseURL },
+            set: { suggestionSettings.setOpenAIBaseURL($0) }
+        )
+    }
+
+    private var openAIModelNameBinding: Binding<String> {
+        Binding(
+            get: { suggestionSettings.openAIModelName },
+            set: { suggestionSettings.setOpenAIModelName($0) }
+        )
+    }
+
+    private func saveOpenAIAPIKey() {
+        do {
+            try suggestionSettings.setOpenAIAPIKey(openAIAPIKeyDraft)
+            openAIKeyStatusMessage = openAIAPIKeyDraft.isEmpty ? "API key cleared." : "API key saved to Keychain."
+            // Wipe the in-memory draft after a successful save so the secret is not retained in
+            // the SwiftUI view's state for longer than necessary.
+            openAIAPIKeyDraft = ""
+        } catch {
+            openAIKeyStatusMessage = "Failed to save: \(error.localizedDescription)"
+        }
     }
 
     private var selectedWordCountPresetBinding: Binding<SuggestionWordCountPreset> {

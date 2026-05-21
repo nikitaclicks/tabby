@@ -21,7 +21,11 @@ final class SuggestionSettingsModel: ObservableObject {
     @Published private(set) var userName: String
     @Published private(set) var debounceMilliseconds: Int
     @Published private(set) var focusPollIntervalMilliseconds: Int
+    @Published private(set) var openAIPreset: OpenAIPreset
+    @Published private(set) var openAIBaseURL: String
+    @Published private(set) var openAIModelName: String
     private let userDefaults: UserDefaults
+    private let keychain: KeychainCredentialStore
 
     private static let isGloballyEnabledDefaultsKey = "tabbyGloballyEnabled"
     private static let disabledAppRulesDefaultsKey = "tabbyDisabledAppRules"
@@ -35,12 +39,17 @@ final class SuggestionSettingsModel: ObservableObject {
     private static let userNameDefaultsKey = "tabbyUserName"
     private static let debounceMillisecondsDefaultsKey = "tabbyDebounceMilliseconds"
     private static let focusPollIntervalMillisecondsDefaultsKey = "tabbyFocusPollIntervalMilliseconds"
+    private static let openAIPresetDefaultsKey = "tabbyOpenAIPreset"
+    private static let openAIBaseURLDefaultsKey = "tabbyOpenAIBaseURL"
+    private static let openAIModelNameDefaultsKey = "tabbyOpenAIModelName"
 
     init(
         configuration: SuggestionConfiguration,
-        userDefaults: UserDefaults = .standard
+        userDefaults: UserDefaults = .standard,
+        keychain: KeychainCredentialStore = KeychainCredentialStore()
     ) {
         self.userDefaults = userDefaults
+        self.keychain = keychain
 
         let resolvedGloballyEnabled = userDefaults.object(forKey: Self.isGloballyEnabledDefaultsKey) as? Bool ?? true
         let resolvedDisabledAppRules = Self.loadDisabledAppRules(from: userDefaults)
@@ -81,6 +90,14 @@ final class SuggestionSettingsModel: ObservableObject {
             return max(10, min(500, raw))
         }()
 
+        let resolvedOpenAIPreset = userDefaults
+            .string(forKey: Self.openAIPresetDefaultsKey)
+            .flatMap(OpenAIPreset.init(rawValue:))
+            ?? .localMLX
+        let resolvedOpenAIBaseURL = userDefaults.string(forKey: Self.openAIBaseURLDefaultsKey)
+            ?? resolvedOpenAIPreset.defaultBaseURL
+        let resolvedOpenAIModelName = userDefaults.string(forKey: Self.openAIModelNameDefaultsKey) ?? ""
+
         isGloballyEnabled = resolvedGloballyEnabled
         disabledAppRules = resolvedDisabledAppRules
         showIndicator = resolvedShowIndicator
@@ -91,6 +108,9 @@ final class SuggestionSettingsModel: ObservableObject {
         userName = resolvedUserName
         debounceMilliseconds = resolvedDebounceMilliseconds
         focusPollIntervalMilliseconds = resolvedFocusPollIntervalMilliseconds
+        openAIPreset = resolvedOpenAIPreset
+        openAIBaseURL = resolvedOpenAIBaseURL
+        openAIModelName = resolvedOpenAIModelName
 
         userDefaults.set(resolvedGloballyEnabled, forKey: Self.isGloballyEnabledDefaultsKey)
         persistDisabledAppRules(resolvedDisabledAppRules)
@@ -102,6 +122,9 @@ final class SuggestionSettingsModel: ObservableObject {
         persistUserName(resolvedUserName)
         userDefaults.set(resolvedDebounceMilliseconds, forKey: Self.debounceMillisecondsDefaultsKey)
         userDefaults.set(resolvedFocusPollIntervalMilliseconds, forKey: Self.focusPollIntervalMillisecondsDefaultsKey)
+        userDefaults.set(resolvedOpenAIPreset.rawValue, forKey: Self.openAIPresetDefaultsKey)
+        userDefaults.set(resolvedOpenAIBaseURL, forKey: Self.openAIBaseURLDefaultsKey)
+        userDefaults.set(resolvedOpenAIModelName, forKey: Self.openAIModelNameDefaultsKey)
     }
 
     /// Legacy compatibility shim. Reads through to `showIndicator`.
@@ -273,6 +296,64 @@ final class SuggestionSettingsModel: ObservableObject {
 
         customSuggestionTextColorHex = normalizedHex
         persistCustomSuggestionTextColorHex(normalizedHex)
+    }
+
+    func selectOpenAIPreset(_ preset: OpenAIPreset, applyDefaultBaseURL: Bool = true) {
+        guard openAIPreset != preset else {
+            return
+        }
+
+        openAIPreset = preset
+        userDefaults.set(preset.rawValue, forKey: Self.openAIPresetDefaultsKey)
+
+        // Only auto-prefill the base URL when the user has not customized it for the new preset.
+        // For `.custom`, leave the existing URL alone since there is no meaningful default.
+        if applyDefaultBaseURL, preset != .custom {
+            setOpenAIBaseURL(preset.defaultBaseURL)
+        }
+    }
+
+    func setOpenAIBaseURL(_ url: String) {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard openAIBaseURL != trimmed else {
+            return
+        }
+
+        openAIBaseURL = trimmed
+        userDefaults.set(trimmed, forKey: Self.openAIBaseURLDefaultsKey)
+    }
+
+    func setOpenAIModelName(_ model: String) {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard openAIModelName != trimmed else {
+            return
+        }
+
+        openAIModelName = trimmed
+        userDefaults.set(trimmed, forKey: Self.openAIModelNameDefaultsKey)
+    }
+
+    /// Reads the API key for the active preset. Returns `nil` when no key is stored or when
+    /// Keychain access fails; callers must not log the value.
+    func openAIAPIKey() -> String? {
+        try? keychain.read(
+            service: KeychainCredentialStore.openAIEngineService,
+            account: openAIPreset.keychainAccount
+        )
+    }
+
+    /// Writes (or clears, when empty) the API key for the active preset. Throws on unexpected
+    /// Keychain failures so the Settings UI can surface the error inline.
+    func setOpenAIAPIKey(_ key: String) throws {
+        try keychain.store(
+            service: KeychainCredentialStore.openAIEngineService,
+            account: openAIPreset.keychainAccount,
+            secret: key
+        )
+        // Nudge observers so views bound to `openAIPreset` re-render any "has key" indicators.
+        // We don't expose the secret as a `@Published` property, so a no-op republish of the
+        // preset is the simplest signal.
+        objectWillChange.send()
     }
 
     func setUserName(_ name: String) {

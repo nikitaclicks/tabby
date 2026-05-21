@@ -251,6 +251,8 @@ extension WelcomeView {
             return foundationModelAvailabilityService.isAvailable
         case .llamaOpenSource:
             return hasAtLeastOneModel
+        case .openAICompatible:
+            return !suggestionSettings.openAIModelName.isEmpty
         }
     }
 
@@ -260,6 +262,8 @@ extension WelcomeView {
             return "Apple Intelligence is not available on this Mac."
         case .llamaOpenSource:
             return "Add or download at least one model to continue."
+        case .openAICompatible:
+            return "Set a model name in Settings to continue."
         }
     }
 

@@ -9,15 +9,18 @@ final class SuggestionEngineRouter {
     private let suggestionSettings: SuggestionSettingsModel
     private let foundationModelEngine: any SuggestionGenerating
     private let llamaEngine: any SuggestionGenerating
+    private let openAIEngine: any SuggestionGenerating
 
     init(
         suggestionSettings: SuggestionSettingsModel,
         foundationModelEngine: any SuggestionGenerating,
-        llamaEngine: any SuggestionGenerating
+        llamaEngine: any SuggestionGenerating,
+        openAIEngine: any SuggestionGenerating
     ) {
         self.suggestionSettings = suggestionSettings
         self.foundationModelEngine = foundationModelEngine
         self.llamaEngine = llamaEngine
+        self.openAIEngine = openAIEngine
     }
 
     func generateSuggestion(for request: SuggestionRequest) async throws -> SuggestionResult {
@@ -33,6 +36,8 @@ final class SuggestionEngineRouter {
             }
         case .llamaOpenSource:
             return try await llamaEngine.generateSuggestion(for: request)
+        case .openAICompatible:
+            return try await openAIEngine.generateSuggestion(for: request)
         }
     }
 
@@ -42,6 +47,7 @@ final class SuggestionEngineRouter {
     func resetCachedGenerationContext() async {
         await foundationModelEngine.resetCachedGenerationContext()
         await llamaEngine.resetCachedGenerationContext()
+        await openAIEngine.resetCachedGenerationContext()
     }
 
     /// Apple Intelligence can reject a request after global availability reports success because

@@ -169,6 +169,8 @@ enum SuggestionRequestFactory {
             return FoundationModelPromptRenderer.promptPreview(for: request)
         case .llamaOpenSource:
             return request.prompt
+        case .openAICompatible:
+            return OpenAIPromptRenderer.promptPreview(for: request)
         }
     }
 }

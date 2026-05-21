@@ -99,10 +99,12 @@ final class TabbyAppEnvironment {
         )
         #endif
 
+        let openAIEngine = OpenAISuggestionEngine(suggestionSettings: suggestionSettings)
         let suggestionEngine: any SuggestionGenerating = SuggestionEngineRouter(
             suggestionSettings: suggestionSettings,
             foundationModelEngine: foundationModelEngine,
-            llamaEngine: LlamaSuggestionEngine(runtimeManager: runtimeManager)
+            llamaEngine: LlamaSuggestionEngine(runtimeManager: runtimeManager),
+            openAIEngine: openAIEngine
         )
 
         let interactionState = SuggestionInteractionState()
