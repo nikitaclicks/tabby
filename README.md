@@ -10,6 +10,8 @@
 
 <p align="center">
   <a href="https://tabbyapp.dev"><strong>Visit the landing page →</strong></a>
+  &nbsp;|&nbsp;
+  <a href="https://discord.gg/qBq5RHcruX"><strong>Join the Discord →</strong></a>
 </p>
 
 <p align="center">

@@ -23,6 +23,9 @@ build/
 .venv-*/
 venv/
 
+# Launch notes
+launch.txt
+
 # Large model files — keep out of git
 *.gguf
 *.bin
