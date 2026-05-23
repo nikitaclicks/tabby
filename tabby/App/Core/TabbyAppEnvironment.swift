@@ -76,7 +76,11 @@ final class TabbyAppEnvironment {
         let overlayController = OverlayController(suggestionSettings: suggestionSettings)
         let activationIndicatorController = ActivationIndicatorController()
         let clipboardContextProvider = ClipboardContextProvider()
-        let summarizer = LlamaVisualContextSummarizer(runtimeManager: runtimeManager)
+        let llamaSummarizer = LlamaVisualContextSummarizer(runtimeManager: runtimeManager)
+        let summarizer = RoutedVisualContextSummarizer(
+            suggestionSettings: suggestionSettings,
+            llamaSummarizer: llamaSummarizer
+        )
         let screenshotContextGenerator = ScreenshotContextGenerator(summarizer: summarizer)
         let visualContextCoordinator = VisualContextCoordinator(
             screenshotContextGenerator: screenshotContextGenerator,

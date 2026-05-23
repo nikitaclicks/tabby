@@ -1,16 +1,70 @@
 import Foundation
 
 /// File overview:
-/// Renders Tabby's suggestion request into the two-message shape expected by OpenAI Chat
-/// Completions: a `system` message that pins the role and output contract, and a `user` message
-/// that carries the prefix-text the model must continue.
+/// Renders Tabby's suggestion request into a single-user-message chat completion payload that
+/// behaves consistently across models with different chat templates.
 ///
-/// Why this file exists:
-/// Local llama runs through a single prompt string and Apple's Foundation Models has its own
-/// instructions channel; OpenAI-compatible servers (mlx-lm, OpenRouter, Ollama, etc.) expect a
-/// chat message array. Keeping that translation here matches the existing renderer per backend
-/// pattern and prevents OpenAI-shaped strings from leaking into `SuggestionRequestFactory`.
+/// Why a single user message (not system + user):
+/// Several popular templates — Gemma 2/3 in particular — reject or silently drop the `system`
+/// role. Sending instructions as `system` means those models receive no guidance and respond
+/// conversationally. Collapsing everything into one `user` message is portable: GPT-4, Claude,
+/// Llama-style instruct models, and Gemma all handle it the same way.
+///
+/// Why a "completion-style" framing inside a chat message:
+/// Chat-tuned models default to *answering* prompts. To get them to *continue* the user's text
+/// instead of replying about it, we end the prompt with a labeled section ("Continuation:") that
+/// makes the next-token target obvious. This is the same trick that makes chat models usable as
+/// completion endpoints in autocomplete tooling.
 enum OpenAIPromptRenderer {
+    /// The single chat `user` message that carries instructions, context, and the prefix text
+    /// in a layout that survives different model chat templates. The prefix text is the very last
+    /// content before a `Continuation:` label so the model's next tokens land where we want them.
+    static func userMessageContent(for request: SuggestionRequest) -> String {
+        var sections: [String] = [
+            "You are an inline autocomplete engine for a macOS text field.",
+            "Continue the text the user has already typed at the caret position.",
+            "Output ONLY the continuation characters that should appear next — no preface, no quotes, no labels, no markdown, no explanation, no chat reply.",
+            "Do not repeat or restate the existing text.",
+            request.completionLengthInstruction,
+            "Match the existing language, tone, casing, and punctuation."
+        ]
+
+        if let name = request.userName,
+           !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sections.append("")
+            sections.append("The user's name is \(name). Use it only if it fits naturally.")
+        }
+
+        sections.append("")
+        sections.append("Active app: \(request.context.applicationName)")
+
+        if let summary = request.visualContextSummary, !summary.isEmpty {
+            sections.append("")
+            sections.append("Visible screen context:")
+            sections.append(summary)
+        }
+
+        if let clipboardContext = request.clipboardContext, !clipboardContext.isEmpty {
+            sections.append("")
+            sections.append("User's clipboard (use only if directly relevant):")
+            sections.append(clipboardContext)
+        }
+
+        let prefix = request.prefixText.isEmpty
+            ? "(the field is empty — produce a short, natural opener)"
+            : request.prefixText
+
+        sections.append("")
+        sections.append("Text so far (do not repeat any of this in your answer):")
+        sections.append("---")
+        sections.append(prefix)
+        sections.append("---")
+        sections.append("")
+        sections.append("Continuation:")
+
+        return sections.joined(separator: "\n")
+    }
+
     /// Mirrors `FoundationModelPromptRenderer.sessionInstructions(for:)` so completion behavior
     /// stays consistent across engines that support a separate instructions channel.
     static func systemMessage(for request: SuggestionRequest) -> String {
@@ -72,16 +126,9 @@ enum OpenAIPromptRenderer {
         return sections.joined(separator: "\n")
     }
 
-    /// Diagnostics need to show both message bodies the OpenAI engine sends. Keeping this here
-    /// (rather than in `SuggestionRequestFactory`) mirrors `FoundationModelPromptRenderer` and
-    /// keeps backend-specific formatting out of the shared request factory.
+    /// Diagnostics show the exact `user` message the engine sends (the engine no longer uses a
+    /// separate `system` role — see file overview).
     static func promptPreview(for request: SuggestionRequest) -> String {
-        [
-            "System:",
-            systemMessage(for: request),
-            "",
-            "User:",
-            userMessage(for: request)
-        ].joined(separator: "\n")
+        userMessageContent(for: request)
     }
 }

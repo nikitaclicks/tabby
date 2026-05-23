@@ -20,12 +20,18 @@ struct SuggestionRequestBuildResult: Equatable, Sendable {
 enum SuggestionRequestFactory {
     private static let maxClipboardContextCharacters = 1_200
 
-    /// Require at least one non-whitespace character so we don't suggest on a blank field.
+    /// Minimum non-whitespace characters required before Tabby asks a model to continue. A single
+    /// typed character has almost no signal for the model — small instruct models hallucinate full
+    /// sentences off "j" or "h". Two characters is enough to anchor most completions (e.g. "hi",
+    /// "co", "th") without being overly restrictive.
+    private static let minimumPrefixCharacters = 2
+
+    /// Require enough typed signal that the model has something to continue from.
     /// No trailing-space gate — the debounce handles rapid keystroke settling, and
     /// `SuggestionTextNormalizer` applies deterministic space management on the output side.
     static func shouldGenerateSuggestion(for precedingText: String) -> Bool {
         let trimmed = precedingText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty
+        return trimmed.count >= minimumPrefixCharacters
     }
 
     /// Builds the generation request plus the exact prompt preview used by Tabby's diagnostics UI.

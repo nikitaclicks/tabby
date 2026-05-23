@@ -54,21 +54,36 @@ struct WindowScreenshotService {
         let processIdentifier = pid_t(context.processIdentifier)
 
         guard CGPreflightScreenCaptureAccess() else {
+            TabbyDebugOptions.log("[VC.capture] Screen Recording permission preflight FAILED")
             throw WindowScreenshotError.screenRecordingPermissionMissing
         }
 
         let shareableContent = try await currentShareableContent()
+        let candidateWindowsForPID = shareableContent.windows.filter {
+            $0.owningApplication?.processID == processIdentifier && $0.isOnScreen
+        }
+        if TabbyDebugOptions.isEnabled {
+            let totalWindowCount = shareableContent.windows.count
+            TabbyDebugOptions.log(
+                "[VC.capture] pid=\(processIdentifier) onScreenWindowsForPID=\(candidateWindowsForPID.count) " +
+                "totalShareableWindows=\(totalWindowCount)"
+            )
+        }
         let matchingWindow =
-            shareableContent.windows.first(where: {
-                $0.owningApplication?.processID == processIdentifier && $0.isActive && $0.isOnScreen
-            })
-            ?? shareableContent.windows.first(where: {
-                $0.owningApplication?.processID == processIdentifier && $0.isOnScreen
-            })
+            candidateWindowsForPID.first(where: { $0.isActive })
+            ?? candidateWindowsForPID.first
 
         guard let matchingWindow else {
+            TabbyDebugOptions.log(
+                "[VC.capture] No window for pid=\(processIdentifier) " +
+                "appBundle=\(context.bundleIdentifier ?? "<nil>")"
+            )
             throw WindowScreenshotError.noVisibleWindowForProcess(processIdentifier)
         }
+        TabbyDebugOptions.log(
+            "[VC.capture] picked window title=\(matchingWindow.title ?? "<nil>") " +
+            "frame=\(matchingWindow.frame)"
+        )
 
         let sourceRect = snapshotRect(
             around: context,
@@ -91,6 +106,11 @@ struct WindowScreenshotService {
         configuration.width = max(Int((localSourceRect.width * outputScale).rounded(.up)), 1)
         configuration.height = max(Int((localSourceRect.height * outputScale).rounded(.up)), 1)
         configuration.showsCursor = false
+
+        TabbyDebugOptions.log(
+            "[VC.capture] crop sourceRect=\(sourceRect) localCrop=\(localSourceRect) " +
+            "scale=\(outputScale) outWxH=\(configuration.width)x\(configuration.height)"
+        )
 
         let image = try await captureImage(filter: filter, configuration: configuration)
         return CapturedWindowScreenshot(image: image, windowTitle: matchingWindow.title)

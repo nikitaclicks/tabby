@@ -23,6 +23,7 @@ final class FocusTracker {
     private let permissionProvider: @MainActor () -> Bool
     private let ignoredBundleIdentifier: String?
     private let snapshotResolver: FocusSnapshotResolver
+    private let chromiumAccessibilityEnabler: ChromiumAccessibilityEnabler
 
     private var timer: Timer?
     private var pollSequence = 0
@@ -33,7 +34,8 @@ final class FocusTracker {
         pollInterval: TimeInterval = 0.05,
         permissionProvider: @escaping @MainActor () -> Bool,
         ignoredBundleIdentifier: String?,
-        snapshotResolver: FocusSnapshotResolver? = nil
+        snapshotResolver: FocusSnapshotResolver? = nil,
+        chromiumAccessibilityEnabler: ChromiumAccessibilityEnabler? = nil
     ) {
         self.pollInterval = pollInterval
         self.permissionProvider = permissionProvider
@@ -41,6 +43,7 @@ final class FocusTracker {
         // Default resolver construction must happen inside the actor-isolated initializer body.
         // Swift evaluates default parameter expressions before entering the `@MainActor` context.
         self.snapshotResolver = snapshotResolver ?? FocusSnapshotResolver()
+        self.chromiumAccessibilityEnabler = chromiumAccessibilityEnabler ?? ChromiumAccessibilityEnabler()
     }
 
     /// Starts periodic AX polling and immediately captures an initial snapshot.
@@ -135,6 +138,15 @@ final class FocusTracker {
             )
         }
 
+        // Wake up web Accessibility in Chromium-based browsers so web `<input>` and `<textarea>`
+        // elements expose role/caret/selection. Self-throttling via the enabler's PID cache, so
+        // this is cheap to call on every poll tick.
+        chromiumAccessibilityEnabler.primeIfNeeded(application: application)
+
+        // Multi-process apps like Chrome publish their web-content focused element with the
+        // renderer's PID, which the system-wide query can return correctly but an app-scoped
+        // query on the main browser PID cannot. So we use the system-wide query — `AXHelper`
+        // filters Tabby's own elements internally so our overlay panels can't be picked up.
         guard let focusedElement = AXHelper.focusedElement() else {
             return inactiveCapture(
                 applicationName: application.localizedName ?? "Unknown",

@@ -196,10 +196,14 @@ enum AXHelper {
     // MARK: - Tree Traversal
 
     /// Returns the currently focused UI element from the system-wide AX object.
+    /// Filters out elements owned by our own process so Tabby's borderless overlay panels
+    /// (SwiftUI hosting views) can never be picked up as the focus target.
     static func focusedElement() -> AXUIElement? {
         let systemWideElement = AXUIElementCreateSystemWide()
         var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(systemWideElement, kAXFocusedUIElementAttribute as CFString, &value)
+        let result = AXUIElementCopyAttributeValue(
+            systemWideElement, kAXFocusedUIElementAttribute as CFString, &value
+        )
         guard result == .success, let element = value else {
             return nil
         }
@@ -210,7 +214,18 @@ enum AXHelper {
 
         // `AXUIElement` is a Core Foundation type, not a normal Swift class.
         // `unsafeBitCast` is appropriate here because we already verified the runtime type id.
-        return unsafeBitCast(element, to: AXUIElement.self)
+        let axElement = unsafeBitCast(element, to: AXUIElement.self)
+
+        // Filter Tabby's own AX elements. Without this, the overlay panel Tabby renders on top
+        // of the target app can be reported as the system-wide focused element, which would
+        // make focus tracking constantly land in our own SwiftUI subtree.
+        var elementPID: pid_t = 0
+        AXUIElementGetPid(axElement, &elementPID)
+        if elementPID == ProcessInfo.processInfo.processIdentifier {
+            return nil
+        }
+
+        return axElement
     }
 
     /// Returns the parent AX node when the current element exposes one.
@@ -230,17 +245,28 @@ enum AXHelper {
     /// Returns the immediate AX children for the current element.
     /// The result may be empty either because the node has no children or because the host app
     /// simply does not expose them through Accessibility.
+    ///
+    /// Chrome's renderer windows for web tabs expose their AX children under the non-standard
+    /// `AXChildrenInNavigationOrder` attribute rather than `AXChildren`. We try the standard
+    /// attribute first (the common case for native apps and most web elements) and fall back to
+    /// the navigation-order variant when it returns empty — that's the only path that surfaces
+    /// the actual web AX subtree inside Chrome's renderer.
     static func childElements(of element: AXUIElement) -> [AXUIElement] {
-        guard let values = copyAttributeValue(kAXChildrenAttribute as CFString, on: element) as? [AnyObject] else {
+        let primary = readElementArray(attribute: kAXChildrenAttribute, on: element)
+        if !primary.isEmpty {
+            return primary
+        }
+        return readElementArray(attribute: "AXChildrenInNavigationOrder", on: element)
+    }
+
+    private static func readElementArray(attribute: String, on element: AXUIElement) -> [AXUIElement] {
+        guard let values = copyAttributeValue(attribute as CFString, on: element) as? [AnyObject] else {
             return []
         }
-
         return values.compactMap { value in
             guard CFGetTypeID(value) == AXUIElementGetTypeID() else {
                 return nil
             }
-
-            // Same Core Foundation bridging rule as `focusedElement()`.
             return unsafeBitCast(value, to: AXUIElement.self)
         }
     }

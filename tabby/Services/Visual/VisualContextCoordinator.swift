@@ -55,6 +55,12 @@ final class VisualContextCoordinator {
         cancel(resetState: false)
 
         let hasPermission = screenRecordingPermissionProvider()
+        TabbyDebugOptions.log(
+            "[VC] startSession focusSeq=\(snapshotContext.focusChangeSequence) " +
+            "permission=\(hasPermission) " +
+            "app=\(snapshotContext.applicationName) bundle=\(snapshotContext.bundleIdentifier ?? "<nil>") " +
+            "role=\(snapshotContext.role) elementID=\(snapshotContext.elementIdentifier)"
+        )
         let initialStatus: VisualContextStatus =
             hasPermission
             ? .capturing

@@ -91,6 +91,15 @@ final class OpenAISuggestionEngine {
 
         let startTime = Date()
 
+        TabbyDebugOptions.log(
+            "[OpenAI engine] POST \(endpoint.absoluteString) model=\(model) " +
+            "max_tokens=\(max(request.maxPredictionTokens, 1)) temp=\(request.temperature)"
+        )
+        if TabbyDebugOptions.isEnabled,
+           let bodyString = String(data: bodyData, encoding: .utf8) {
+            TabbyDebugOptions.log("[OpenAI engine] request body:\n\(bodyString)")
+        }
+
         let data: Data
         let response: URLResponse
         do {
@@ -106,6 +115,12 @@ final class OpenAISuggestionEngine {
         }
 
         try Task.checkCancellation()
+
+        if TabbyDebugOptions.isEnabled,
+           let bodyString = String(data: data, encoding: .utf8) {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            TabbyDebugOptions.log("[OpenAI engine] response status=\(status):\n\(bodyString)")
+        }
 
         if let httpResponse = response as? HTTPURLResponse,
            !(200...299).contains(httpResponse.statusCode) {
@@ -165,14 +180,16 @@ final class OpenAISuggestionEngine {
     }
 
     private func makeRequestBody(for request: SuggestionRequest, model: String) -> [String: Any] {
-        let systemMessage = OpenAIPromptRenderer.systemMessage(for: request)
-        let userMessage = OpenAIPromptRenderer.userMessage(for: request)
+        // One user message rather than system+user: Gemma's chat template (and a few others)
+        // rejects or silently drops `system`, which would strip Tabby's instructions on the way
+        // to the model. The single-message form is portable across templates and lets us anchor
+        // the prefix text at the very end of the prompt right before "Continuation:".
+        let userContent = OpenAIPromptRenderer.userMessageContent(for: request)
 
         return [
             "model": model,
             "messages": [
-                ["role": "system", "content": systemMessage],
-                ["role": "user", "content": userMessage]
+                ["role": "user", "content": userContent]
             ],
             "max_tokens": max(request.maxPredictionTokens, 1),
             "temperature": request.temperature,

@@ -67,6 +67,34 @@ struct FocusSnapshotResolver {
         guard let resolvedCandidate = selectedCandidate,
             resolution.resolvedCandidate != nil
         else {
+            // Detailed unsupported logging: most common cause is web rich-text editors mounting
+            // their AX subtree late (focus first lands on a wrapper). Log what we saw so we can
+            // see whether to search deeper, retry, or accept the editor as unsupported.
+            if TabbyDebugOptions.isEnabled {
+                var focusedPID: pid_t = 0
+                AXUIElementGetPid(focusedElement, &focusedPID)
+                let focusedChildCount = AXHelper.childElements(of: focusedElement).count
+                let focusedAttrs = AXHelper.attributeNames(on: focusedElement)
+                    .filter { $0.hasPrefix("AX") }
+                    .prefix(15)
+                    .joined(separator: ",")
+                let candidateSummary = candidates.prefix(6).map { snap in
+                    let role = snap.resolverCandidate.role
+                    let subrole = snap.resolverCandidate.subrole ?? "<nil>"
+                    let val = snap.resolverCandidate.hasTextValue ? "value" : "noVal"
+                    let sel = snap.resolverCandidate.hasSelectionRange ? "sel" : "noSel"
+                    let caret = snap.resolverCandidate.hasCaretBounds ? "caret" : "noCaret"
+                    return "\(role)/\(subrole)[\(val) \(sel) \(caret)]"
+                }.joined(separator: " | ")
+                TabbyDebugOptions.log(
+                    "[Focus] UNSUPPORTED focusSeq=\(focusChangeSequence) " +
+                    "frontmostApp=\(applicationName) frontmostBundle=\(bundleIdentifier ?? "<nil>") " +
+                    "focusedElementPID=\(focusedPID) focusedRole=\(focusedRole ?? "<nil>") " +
+                    "focusedChildCount=\(focusedChildCount) " +
+                    "candidateCount=\(candidates.count) reason=\(resolution.unsupportedReason) " +
+                    "focusedAttrs=[\(focusedAttrs)] candidates=\(candidateSummary)"
+                )
+            }
             return FocusSnapshot(
                 applicationName: applicationName,
                 bundleIdentifier: bundleIdentifier,
@@ -234,16 +262,46 @@ struct FocusSnapshotResolver {
         // 1. focused node
         // 2. a couple of ancestors
         // 3. children of those nodes
+        // 4. bounded BFS into the focused node's descendants (depth ≤ 4, ≤ 80 nodes)
         //
-        // This is a pragmatic compromise for apps that focus a wrapper element instead of the real
-        // editable text node. We do not try to walk the entire AX tree.
+        // The last step exists because some web apps (ClickUp, Notion, others using rich-text
+        // editors) focus a wrapper element while the real editable text node sits several levels
+        // deeper in the web AX tree. Without this descent, those inputs are reported as
+        // Unsupported. The depth/count caps keep this cheap on every focus tick.
         for node in [focusedElement] + ancestors {
             for child in AXHelper.childElements(of: node) {
                 append(child)
             }
         }
 
+        bfsDescend(into: focusedElement, append: append)
+
         return ordered
+    }
+
+    /// Bounded BFS into descendants of `root`, calling `append` for each node visited.
+    /// Stops once depth or visit count limits are reached so this does not turn into a full
+    /// AX-tree walk for huge web pages.
+    private func bfsDescend(
+        into root: AXUIElement,
+        append: (AXUIElement?) -> Void
+    ) {
+        let maxDepth = 4
+        let maxVisits = 80
+
+        var queue: [(AXUIElement, Int)] = AXHelper.childElements(of: root).map { ($0, 1) }
+        var visits = 0
+
+        while !queue.isEmpty, visits < maxVisits {
+            let (node, depth) = queue.removeFirst()
+            append(node)
+            visits += 1
+
+            guard depth < maxDepth else { continue }
+            for child in AXHelper.childElements(of: node) {
+                queue.append((child, depth + 1))
+            }
+        }
     }
 
     /// Runs deep geometry search from the resolved editable candidate first, then falls back to
@@ -380,10 +438,28 @@ struct FocusSnapshotResolver {
             supportedAttributes.contains("AXEditable")
             ? AXHelper.boolValue(for: "AXEditable" as CFString, on: element)
             : nil
-        let textValue =
+        let rawTextValue =
             supportedAttributes.contains(kAXValueAttribute as String)
             ? AXHelper.stringValue(for: kAXValueAttribute as CFString, on: element)
             : nil
+        // Chrome's web AX (and a few native apps) returns the field's placeholder string as
+        // `kAXValueAttribute` when the field is empty. Treating that as user-typed text makes
+        // Tabby ask the completion model to "continue" the placeholder (e.g. "Write to Hierarchy
+        // Squad…" → model suggests "/help"). Detect this by comparing against the explicit
+        // placeholder attribute and zeroing the value when they match.
+        let placeholderValue =
+            supportedAttributes.contains("AXPlaceholderValue")
+            ? AXHelper.stringValue(for: "AXPlaceholderValue" as CFString, on: element)
+            : nil
+        let textValue: String?
+        if let raw = rawTextValue,
+           let placeholder = placeholderValue,
+           !placeholder.isEmpty,
+           raw == placeholder {
+            textValue = ""
+        } else {
+            textValue = rawTextValue
+        }
         let selection =
             supportedAttributes.contains(kAXSelectedTextRangeAttribute as String)
             ? AXHelper.rangeValue(for: kAXSelectedTextRangeAttribute as CFString, on: element)

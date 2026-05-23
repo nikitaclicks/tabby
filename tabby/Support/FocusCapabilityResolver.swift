@@ -87,6 +87,14 @@ enum FocusCapabilityResolver {
 
     /// Computes the capability gaps and heuristic score for a single candidate element.
     static func evaluate(_ candidate: FocusCapabilityCandidate) -> FocusCapabilityCandidateEvaluation {
+        // Web AX in Chrome exposes contenteditable text and some `<input>` elements with role
+        // `AXStaticText` rather than `AXTextField`. The declared role would have us skip them,
+        // but if all three text capabilities (value + selection + caret) are present, the element
+        // is observably editable regardless of role — non-editable labels don't expose selection
+        // ranges or caret bounds. Treat that combination as a strong editability signal.
+        let observedTextEditableSignal =
+            candidate.hasTextValue && candidate.hasSelectionRange && candidate.hasCaretBounds
+
         let missingCapabilities = FocusCapabilityRequirement.allCases.filter { requirement in
             switch requirement {
             case .textValue:
@@ -96,6 +104,9 @@ enum FocusCapabilityResolver {
             case .caretBounds:
                 return !candidate.hasCaretBounds
             case .editableTarget:
+                if observedTextEditableSignal {
+                    return false
+                }
                 return candidate.isKnownReadOnlyRole || !candidate.hasStrongEditabilitySignal
             }
         }

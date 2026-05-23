@@ -54,6 +54,13 @@ final class ScreenshotContextGenerator {
         for context: FocusedInputSnapshot,
         onStatusChange: (@Sendable (VisualContextStatus) async -> Void)? = nil
     ) async throws -> VisualContextExcerpt {
+        TabbyDebugOptions.log(
+            "[VC] generateContext app=\(context.applicationName) " +
+            "bundle=\(context.bundleIdentifier ?? "<nil>") " +
+            "role=\(context.role) subrole=\(context.subrole ?? "<nil>") " +
+            "inputFrame=\(rectDescription(context.inputFrameRect)) " +
+            "caret=\(rectDescription(context.caretRect))"
+        )
         await onStatusChange?(.capturing)
 
         let screenshot: CapturedWindowScreenshot
@@ -62,9 +69,15 @@ final class ScreenshotContextGenerator {
                 around: context,
                 snapshotDimension: configuration.snapshotDimension
             )
+            TabbyDebugOptions.log(
+                "[VC] capture ok title=\(screenshot.windowTitle ?? "<nil>") " +
+                "size=\(screenshot.image.width)x\(screenshot.image.height)"
+            )
         } catch let error as WindowScreenshotError {
+            TabbyDebugOptions.log("[VC] capture FAILED (unavailable): \(error.localizedDescription)")
             throw ScreenshotContextGenerationError.unavailable(error.localizedDescription)
         } catch {
+            TabbyDebugOptions.log("[VC] capture FAILED: \(error.localizedDescription)")
             throw ScreenshotContextGenerationError.failed(error.localizedDescription)
         }
 
@@ -73,7 +86,11 @@ final class ScreenshotContextGenerator {
         let extractedText: String
         do {
             extractedText = try await textExtractor.extractText(from: screenshot.image).text
+            TabbyDebugOptions.log("[VC] OCR ok chars=\(extractedText.count)")
         } catch ScreenTextExtractionError.noRecognizedText {
+            TabbyDebugOptions.log(
+                "[VC] OCR returned no text. windowTitle=\(screenshot.windowTitle ?? "<nil>")"
+            )
             guard let windowTitle = screenshot.windowTitle,
                 hasMeaningfulSignal(windowTitle)
             else {
@@ -86,8 +103,10 @@ final class ScreenshotContextGenerator {
                 text: boundedSummaryText(normalizeRecognizedText(windowTitle))
             )
         } catch let error as ScreenTextExtractionError {
+            TabbyDebugOptions.log("[VC] OCR FAILED (unavailable): \(error.localizedDescription)")
             throw ScreenshotContextGenerationError.unavailable(error.localizedDescription)
         } catch {
+            TabbyDebugOptions.log("[VC] OCR FAILED: \(error.localizedDescription)")
             throw ScreenshotContextGenerationError.failed(error.localizedDescription)
         }
 
@@ -102,6 +121,9 @@ final class ScreenshotContextGenerator {
         }
 
         guard hasMeaningfulSignal(normalizedText) else {
+            TabbyDebugOptions.log(
+                "[VC] normalized OCR too short to summarize chars=\(normalizedText.count)"
+            )
             throw ScreenshotContextGenerationError.unavailable(
                 "The screenshot did not contain enough visible text to build prompt context."
             )
@@ -111,14 +133,32 @@ final class ScreenshotContextGenerator {
         if let summarizer = summarizer {
             await onStatusChange?(.summarizingText)
             do {
-                generatedContextText = try await summarizer.summarize(
+                let summarized = try await summarizer.summarize(
                     text: normalizedText,
                     applicationName: context.applicationName
                 )
+                // Local llama summarizer can legitimately return empty when no model is loaded
+                // (user is on a non-llama engine). Falling back to the raw OCR text keeps visual
+                // context useful instead of throwing "not enough text" even though we OCR'd plenty.
+                if summarized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    TabbyDebugOptions.log(
+                        "[VC] summarize returned empty — falling back to raw OCR (chars=\(normalizedText.count))"
+                    )
+                    generatedContextText = normalizedText
+                } else {
+                    TabbyDebugOptions.log(
+                        "[VC] summarize ok chars=\(summarized.count)"
+                    )
+                    generatedContextText = summarized
+                }
             } catch {
-                throw ScreenshotContextGenerationError.failed(
-                    "Summarization failed: \(error.localizedDescription)"
+                // Same reasoning: if summarization throws (no llama runtime / no model), prefer
+                // raw OCR over giving the user nothing. Better to inject unsummarized context
+                // than to silently lose the screenshot we just spent CPU on.
+                TabbyDebugOptions.log(
+                    "[VC] summarize FAILED, using raw OCR fallback: \(error.localizedDescription)"
                 )
+                generatedContextText = normalizedText
             }
         } else {
             generatedContextText = normalizedText
@@ -126,10 +166,15 @@ final class ScreenshotContextGenerator {
 
         let finalContextText = boundedSummaryText(generatedContextText)
         guard hasMeaningfulSignal(finalContextText) else {
+            TabbyDebugOptions.log(
+                "[VC] final context empty after summarize+bound. " +
+                "rawOCR=\(normalizedText.count) summarized=\(generatedContextText.count) final=\(finalContextText.count)"
+            )
             throw ScreenshotContextGenerationError.unavailable(
                 "The screenshot did not contain enough visible text to build prompt context."
             )
         }
+        TabbyDebugOptions.log("[VC] context ready chars=\(finalContextText.count)")
 
         return VisualContextExcerpt(
             text: finalContextText
@@ -197,6 +242,11 @@ final class ScreenshotContextGenerator {
 
             try? text.write(to: textURL, atomically: true, encoding: .utf8)
         }
+    }
+
+    private func rectDescription(_ rect: CGRect?) -> String {
+        guard let rect else { return "<nil>" }
+        return String(format: "(%.0f,%.0f %.0fx%.0f)", rect.minX, rect.minY, rect.width, rect.height)
     }
 
     private func sanitizedDebugName(from rawName: String) -> String {

@@ -155,7 +155,7 @@ final class FocusDebugOverlayController {
     }
 
     private func makePanel() -> NSPanel {
-        let panel = NSPanel(
+        let panel = UnfocusableDebugPanel(
             contentRect: CGRect(x: 0, y: 0, width: 10, height: 10),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -462,4 +462,13 @@ private enum VisualContextStageDisplayState {
             return .red.opacity(0.25)
         }
     }
+}
+
+/// NSPanel subclass that never becomes key or main. Without this, the SwiftUI hosting view
+/// inside the debug overlay can be reported by macOS as the system-wide focused AX element,
+/// which then masks the focused element in whatever app the user is actually typing into.
+/// `OverlayController` does the same thing for the ghost-text panel.
+private final class UnfocusableDebugPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
 }

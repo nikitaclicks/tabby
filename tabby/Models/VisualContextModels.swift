@@ -20,8 +20,11 @@ struct VisualContextConfiguration: Equatable, Sendable {
     static let `default` = VisualContextConfiguration(
         // Capture a compact area around the focused field instead of an entire window.
         snapshotDimension: 500,
-        // Retina screenshots may still arrive at ~2x backing scale, so keep a small OCR ceiling.
-        maxImageDimension: 900,
+        // Retina screenshots arrive at 2x backing scale and can be up to ~3400px wide for
+        // full-width inputs (chat boxes, terminals). Capping OCR input at 900px forced a ~4x
+        // downscale that destroyed small terminal/web fonts. 2800 preserves detail for typical
+        // captures while still bounding OCR cost.
+        maxImageDimension: 2800,
         minRecognizedCharacterCount: 12,
         // OCR text is injected directly into the completion prompt, so keep it intentionally short.
         maxRecognizedCharacters: 2000,

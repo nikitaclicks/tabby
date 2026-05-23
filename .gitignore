@@ -31,3 +31,6 @@ posts.txt
 # Large model files — keep out of git
 *.gguf
 *.bin
+
+# LLVM profile output from local debug builds
+*.profraw
