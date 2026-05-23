@@ -193,6 +193,149 @@ enum AXHelper {
         return value as AnyObject?
     }
 
+    /// Reads a raw parameterized AX attribute with an arbitrary `CFTypeRef` parameter and leaves
+    /// type interpretation to the caller. This is the marker-range equivalent of
+    /// `copyAttributeValue`: it exists because every typed parameterized helper would otherwise
+    /// duplicate the same `AXUIElementCopyParameterizedAttributeValue` boilerplate.
+    static func copyParameterizedAttributeValue(
+        _ attribute: CFString,
+        parameter: CFTypeRef,
+        on element: AXUIElement
+    ) -> AnyObject? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyParameterizedAttributeValue(element, attribute, parameter, &value)
+        guard result == .success else {
+            return nil
+        }
+
+        return value as AnyObject?
+    }
+
+    // MARK: - AX Text Markers
+    //
+    // Chromium and WebKit expose contenteditable editors (Gmail compose, Slack web, Notion,
+    // ClickUp chat, Discord web) through `AXTextMarker` / `AXTextMarkerRange` objects rather
+    // than through `kAXSelectedTextRangeAttribute`. These markers are opaque `CFTypeRef`
+    // values: we never inspect them, we only feed them back into parameterized AX attributes.
+    //
+    // All readers below feature-detect their attribute via `parameterizedAttributeNames(on:)`
+    // so apps that don't implement the marker API degrade to `nil` instead of erroring.
+
+    /// Reads the marker range representing the element's currently selected text or caret.
+    /// Returned value is opaque — pass it back into other marker helpers, never inspect it.
+    static func selectedTextMarkerRange(on element: AXUIElement) -> CFTypeRef? {
+        copyAttributeValue("AXSelectedTextMarkerRange" as CFString, on: element)
+    }
+
+    /// Reads the full marker range covering the element's editable region. Equivalent to
+    /// "everything from the start of this contenteditable to its end".
+    ///
+    /// `host` is the element we query the parameterized attribute on. In Chromium web AX the
+    /// marker API is implemented on the `AXWebArea` ancestor, not on individual contenteditable
+    /// nodes, so callers walk up to a marker-aware host and pass the original focused element
+    /// as the parameter. When `host` is nil we default to querying through `element` itself —
+    /// the right behavior for native AppKit text views where the element exposes its own markers.
+    static func textMarkerRangeForElement(
+        _ element: AXUIElement,
+        host: AXUIElement? = nil
+    ) -> CFTypeRef? {
+        let queryTarget = host ?? element
+        let parameterized = Set(parameterizedAttributeNames(on: queryTarget))
+        guard parameterized.contains("AXTextMarkerRangeForUIElement") else {
+            return nil
+        }
+        return copyParameterizedAttributeValue(
+            "AXTextMarkerRangeForUIElement" as CFString,
+            parameter: element,
+            on: queryTarget
+        )
+    }
+
+    /// Returns the start (or end) marker of a marker range. Required because the only reliable
+    /// way to measure "characters before the selection" is to build a sub-range from the
+    /// element-start marker to the selection-start marker and ask AX for its length.
+    static func startMarker(of range: CFTypeRef, on element: AXUIElement) -> CFTypeRef? {
+        let parameterized = Set(parameterizedAttributeNames(on: element))
+        guard parameterized.contains("AXStartTextMarkerForTextMarkerRange") else {
+            return nil
+        }
+        return copyParameterizedAttributeValue(
+            "AXStartTextMarkerForTextMarkerRange" as CFString,
+            parameter: range,
+            on: element
+        )
+    }
+
+    static func endMarker(of range: CFTypeRef, on element: AXUIElement) -> CFTypeRef? {
+        let parameterized = Set(parameterizedAttributeNames(on: element))
+        guard parameterized.contains("AXEndTextMarkerForTextMarkerRange") else {
+            return nil
+        }
+        return copyParameterizedAttributeValue(
+            "AXEndTextMarkerForTextMarkerRange" as CFString,
+            parameter: range,
+            on: element
+        )
+    }
+
+    /// Builds a marker range that spans two markers regardless of their order. WebKit allows
+    /// backwards selections (caret-anchor before drag-anchor); using the "unordered" variant
+    /// normalizes the result so the resulting range is always start ≤ end.
+    static func markerRange(
+        between start: CFTypeRef,
+        and end: CFTypeRef,
+        on element: AXUIElement
+    ) -> CFTypeRef? {
+        let parameterized = Set(parameterizedAttributeNames(on: element))
+        guard parameterized.contains("AXTextMarkerRangeForUnorderedTextMarkers") else {
+            return nil
+        }
+        let pair = [start, end] as CFArray
+        return copyParameterizedAttributeValue(
+            "AXTextMarkerRangeForUnorderedTextMarkers" as CFString,
+            parameter: pair,
+            on: element
+        )
+    }
+
+    /// Returns the UTF-16 character count of a marker range. Chromium implements this by
+    /// walking the range's DOM nodes; on large pages it can be measurably slow, so callers
+    /// should only invoke it on focus change rather than on every poll tick.
+    static func lengthForMarkerRange(_ range: CFTypeRef, on element: AXUIElement) -> Int? {
+        let parameterized = Set(parameterizedAttributeNames(on: element))
+        guard parameterized.contains("AXLengthForTextMarkerRange") else {
+            return nil
+        }
+        let value = copyParameterizedAttributeValue(
+            "AXLengthForTextMarkerRange" as CFString,
+            parameter: range,
+            on: element
+        )
+        return (value as? NSNumber)?.intValue
+    }
+
+    /// Returns the plain-text content of a marker range. Callers should bound the marker range
+    /// to a window around the caret before reading on large documents (an entire Gmail thread
+    /// or Notion doc otherwise stalls the poll cadence).
+    static func stringForMarkerRange(_ range: CFTypeRef, on element: AXUIElement) -> String? {
+        let parameterized = Set(parameterizedAttributeNames(on: element))
+        guard parameterized.contains("AXStringForTextMarkerRange") else {
+            return nil
+        }
+        let value = copyParameterizedAttributeValue(
+            "AXStringForTextMarkerRange" as CFString,
+            parameter: range,
+            on: element
+        )
+        if let string = value as? String {
+            return string
+        }
+        if let attributed = value as? NSAttributedString {
+            return attributed.string
+        }
+        return nil
+    }
+
     // MARK: - Tree Traversal
 
     /// Returns the currently focused UI element from the system-wide AX object.

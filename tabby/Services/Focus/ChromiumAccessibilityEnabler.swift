@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Darwin
 import Foundation
 
 /// File overview:
@@ -63,6 +64,15 @@ final class ChromiumAccessibilityEnabler {
 
     /// Primes the given app if it is a known Chromium browser we haven't seen before. Safe to
     /// call on every focus tick: the per-PID cache makes repeated invocations a no-op.
+    ///
+    /// Also primes the browser's renderer/helper subprocesses. Chromium spawns one helper
+    /// process per tab (or per site, depending on the site-isolation policy), and the web AX
+    /// tree for a given page lives inside that renderer's PID — not the main browser PID. The
+    /// `AXManualAccessibility` attribute we set on the main browser does not automatically
+    /// propagate to existing renderer subprocesses, so the system-wide AX query keeps returning
+    /// the browser's own elements (the omnibox, the window chrome) instead of reaching into the
+    /// web content. Priming each child PID directly is what actually wakes the web AX subtree
+    /// up for an already-running browser.
     func primeIfNeeded(application: NSRunningApplication) {
         guard isEnabled else {
             return
@@ -72,8 +82,22 @@ final class ChromiumAccessibilityEnabler {
             return
         }
 
-        let pid = application.processIdentifier
-        guard !primedPIDs.contains(pid) else {
+        let mainPid = application.processIdentifier
+        primePid(mainPid, label: bundleIdentifier)
+        primeChildrenIfNeeded(parentPid: mainPid)
+    }
+
+    /// Returns whether the given bundle identifier is a Chromium-based browser we know how to
+    /// prime. Exposed so callers (focus polling, debug overlays) can mirror our coverage decisions
+    /// without having to duplicate the bundle-identifier list.
+    static func isChromiumBundle(_ bundleIdentifier: String) -> Bool {
+        knownChromiumBundleIdentifiers.contains(bundleIdentifier)
+    }
+
+    /// Sets `AXManualAccessibility=true` on a single PID, recording it in the per-session cache.
+    /// `label` is just for diagnostics; it disambiguates "main browser" vs "renderer" priming.
+    private func primePid(_ pid: pid_t, label: String) {
+        guard pid > 0, !primedPIDs.contains(pid) else {
             return
         }
 
@@ -84,7 +108,42 @@ final class ChromiumAccessibilityEnabler {
         primedPIDs.insert(pid)
 
         TabbyDebugOptions.log(
-            "[ChromiumAX] Primed \(bundleIdentifier) pid=\(pid) via AXManualAccessibility"
+            "[ChromiumAX] Primed \(label) pid=\(pid) via AXManualAccessibility"
         )
+    }
+
+    /// Primes any not-yet-primed direct child processes of `parentPid`. Cheap to call on every
+    /// focus tick: `proc_listchildpids` is a microsecond-scale syscall and the per-PID cache
+    /// short-circuits priming we've already done. New tabs that spawn after we've primed will
+    /// be picked up on the next poll.
+    private func primeChildrenIfNeeded(parentPid: pid_t) {
+        for childPid in directChildPids(of: parentPid) {
+            primePid(childPid, label: "renderer")
+        }
+    }
+
+    /// Returns the direct child PIDs of `parentPid` using libproc. Empty on failure — Tabby
+    /// continues to work without renderer priming, just less reliably on web content focus.
+    private func directChildPids(of parentPid: pid_t) -> [pid_t] {
+        let neededBytes = proc_listchildpids(parentPid, nil, 0)
+        guard neededBytes > 0 else {
+            return []
+        }
+        // Add headroom in case child count grew between the size query and the actual read.
+        let capacity = Int(neededBytes) / MemoryLayout<pid_t>.size + 8
+        var buffer = [pid_t](repeating: 0, count: capacity)
+        let bytesUsed = buffer.withUnsafeMutableBufferPointer { pointer -> Int32 in
+            guard let base = pointer.baseAddress else { return 0 }
+            return proc_listchildpids(
+                parentPid,
+                base,
+                Int32(capacity * MemoryLayout<pid_t>.size)
+            )
+        }
+        guard bytesUsed > 0 else {
+            return []
+        }
+        let pidCount = Int(bytesUsed) / MemoryLayout<pid_t>.size
+        return buffer.prefix(pidCount).filter { $0 > 0 }
     }
 }

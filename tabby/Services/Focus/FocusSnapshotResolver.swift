@@ -74,11 +74,39 @@ struct FocusSnapshotResolver {
                 var focusedPID: pid_t = 0
                 AXUIElementGetPid(focusedElement, &focusedPID)
                 let focusedChildCount = AXHelper.childElements(of: focusedElement).count
-                let focusedAttrs = AXHelper.attributeNames(on: focusedElement)
+                let focusedAttrSet = Set(AXHelper.attributeNames(on: focusedElement))
+                let focusedParamAttrSet = Set(AXHelper.parameterizedAttributeNames(on: focusedElement))
+                let focusedAttrs = focusedAttrSet
                     .filter { $0.hasPrefix("AX") }
+                    .sorted()
+                    .prefix(25)
+                    .joined(separator: ",")
+                let focusedParamAttrs = focusedParamAttrSet
+                    .filter { $0.hasPrefix("AX") }
+                    .sorted()
                     .prefix(15)
                     .joined(separator: ",")
-                let candidateSummary = candidates.prefix(6).map { snap in
+                // Marker-API presence on the focused element AND on the nearest marker host
+                // (typically the AXWebArea ancestor). If neither has it, Chrome's web AX is
+                // either not primed or this page is in a non-AT-aware iframe.
+                let focusedHasSelMarker = focusedAttrSet.contains("AXSelectedTextMarkerRange")
+                let markerHost: AXUIElement? = {
+                    var current: AXUIElement? = focusedElement
+                    var hops = 0
+                    while let node = current, hops < 12 {
+                        let attrs = Set(AXHelper.attributeNames(on: node))
+                        if attrs.contains("AXSelectedTextMarkerRange") {
+                            return node
+                        }
+                        current = AXHelper.parentElement(of: node)
+                        hops += 1
+                    }
+                    return nil
+                }()
+                let markerHostRole = markerHost.flatMap {
+                    AXHelper.stringValue(for: kAXRoleAttribute as CFString, on: $0)
+                } ?? "<none>"
+                let candidateSummary = candidates.prefix(8).map { snap in
                     let role = snap.resolverCandidate.role
                     let subrole = snap.resolverCandidate.subrole ?? "<nil>"
                     let val = snap.resolverCandidate.hasTextValue ? "value" : "noVal"
@@ -89,10 +117,12 @@ struct FocusSnapshotResolver {
                 TabbyDebugOptions.log(
                     "[Focus] UNSUPPORTED focusSeq=\(focusChangeSequence) " +
                     "frontmostApp=\(applicationName) frontmostBundle=\(bundleIdentifier ?? "<nil>") " +
-                    "focusedElementPID=\(focusedPID) focusedRole=\(focusedRole ?? "<nil>") " +
+                    "focusedElementPID=\(focusedPID) focusedRole=\(focusedRole) " +
                     "focusedChildCount=\(focusedChildCount) " +
                     "candidateCount=\(candidates.count) reason=\(resolution.unsupportedReason) " +
-                    "focusedAttrs=[\(focusedAttrs)] candidates=\(candidateSummary)"
+                    "focusedHasSelMarker=\(focusedHasSelMarker) markerHostRole=\(markerHostRole) " +
+                    "focusedAttrs=[\(focusedAttrs)] focusedParamAttrs=[\(focusedParamAttrs)] " +
+                    "candidates=\(candidateSummary)"
                 )
             }
             return FocusSnapshot(
@@ -282,12 +312,19 @@ struct FocusSnapshotResolver {
     /// Bounded BFS into descendants of `root`, calling `append` for each node visited.
     /// Stops once depth or visit count limits are reached so this does not turn into a full
     /// AX-tree walk for huge web pages.
+    ///
+    /// Depth/visit budget is sized for Chromium contenteditable editors (Notion, ClickUp chat,
+    /// Gmail compose, Slack web). Chrome reports focus on a wrapper several levels above the
+    /// real editable target: AXWebArea → AXGroup → AXScrollArea → AXGroup → … → AXTextField is
+    /// typical. Depth 4 / 80 visits was too shallow for those trees, which left the editable
+    /// candidate unreached and reported the field as unsupported. The deep-geometry walker in
+    /// this same file uses depth 10 / 200 nodes for an analogous concern.
     private func bfsDescend(
         into root: AXUIElement,
         append: (AXUIElement?) -> Void
     ) {
-        let maxDepth = 4
-        let maxVisits = 80
+        let maxDepth = 6
+        let maxVisits = 200
 
         var queue: [(AXUIElement, Int)] = AXHelper.childElements(of: root).map { ($0, 1) }
         var visits = 0
@@ -451,19 +488,40 @@ struct FocusSnapshotResolver {
             supportedAttributes.contains("AXPlaceholderValue")
             ? AXHelper.stringValue(for: "AXPlaceholderValue" as CFString, on: element)
             : nil
+        let nativeSelection =
+            supportedAttributes.contains(kAXSelectedTextRangeAttribute as String)
+            ? AXHelper.rangeValue(for: kAXSelectedTextRangeAttribute as CFString, on: element)
+            : nil
+
+        // Chromium contenteditable editors (Gmail compose, Slack web, Notion, ClickUp chat,
+        // Discord web) don't expose `kAXSelectedTextRangeAttribute`. Their selection state
+        // lives in the opaque `AXTextMarker` API, and `kAXValueAttribute` either omits the
+        // editable text or returns the placeholder. When the native NSRange selection is
+        // missing, derive both the selection offset and the surrounding text via marker math.
+        // The result feeds the existing capability resolver (which accepts any candidate with
+        // value + selection + caret as "observably editable"), so no schema change is needed.
+        let markerSynthesis: MarkerSelectionSynthesis? =
+            nativeSelection == nil
+            ? synthesizeMarkerBasedSelection(element: element)
+            : nil
+
         let textValue: String?
-        if let raw = rawTextValue,
-           let placeholder = placeholderValue,
-           !placeholder.isEmpty,
-           raw == placeholder {
+        if let synthesis = markerSynthesis {
+            textValue = synthesis.text
+            TabbyDebugOptions.log(
+                "[Focus] CHROME-CONTENTEDITABLE role=\(role) " +
+                "selectionLoc=\(synthesis.range.location) selectionLen=\(synthesis.range.length) " +
+                "textChars=\(synthesis.text.count)"
+            )
+        } else if let raw = rawTextValue,
+                  let placeholder = placeholderValue,
+                  !placeholder.isEmpty,
+                  raw == placeholder {
             textValue = ""
         } else {
             textValue = rawTextValue
         }
-        let selection =
-            supportedAttributes.contains(kAXSelectedTextRangeAttribute as String)
-            ? AXHelper.rangeValue(for: kAXSelectedTextRangeAttribute as CFString, on: element)
-            : nil
+        let selection: NSRange? = nativeSelection ?? markerSynthesis?.range
         var inputFrameRect =
             supportedAttributes.contains("AXFrame")
             ? geometryResolver.resolveInputFrameRect(for: element)
@@ -541,6 +599,86 @@ struct FocusSnapshotResolver {
             isSecure: isSecure,
             resolverCandidate: resolverCandidate
         )
+    }
+
+    /// Derives an NSRange selection and surrounding text from a Chromium contenteditable's
+    /// AX text-marker API. Used when `kAXSelectedTextRangeAttribute` is missing — the typical
+    /// case for Gmail, Slack web, Notion, ClickUp chat, and similar web editors.
+    ///
+    /// In Chromium web AX the marker API is implemented on the `AXWebArea` ancestor, not on
+    /// individual contenteditable nodes. So we walk up from the focused element until we find
+    /// a host that exposes `AXSelectedTextMarkerRange` + the parameterized marker attributes,
+    /// then query everything through that host while parameterizing element-anchored queries
+    /// with the original focused element. That keeps `selection.location` element-local even
+    /// when the editable is several levels deep inside the web area.
+    ///
+    /// Math: `selection.location` is the character count of the range from the start of the
+    /// element's editable region to the start of the current selection. `selection.length` is
+    /// the character count of the selection itself. Both are computed via parameterized
+    /// `AXLengthForTextMarkerRange` calls so we don't have to interpret opaque marker objects.
+    /// `AXTextMarkerRangeForUnorderedTextMarkers` is used to compose the prefix range — its
+    /// "unordered" semantics also normalize backward selections (caret-anchor before drag-anchor).
+    ///
+    /// The element's text is bounded to a window around the caret (4 KB before, 4 KB after)
+    /// so a long Gmail thread or Notion doc doesn't drag its entire content into every focus
+    /// snapshot. Downstream prompt sanitizers further trim the prompt; this just keeps focus
+    /// snapshots cheap.
+    private func synthesizeMarkerBasedSelection(element: AXUIElement) -> MarkerSelectionSynthesis? {
+        guard let host = findMarkerHost(startingFrom: element) else {
+            return nil
+        }
+
+        guard let selectedMarkerRange = AXHelper.selectedTextMarkerRange(on: host),
+              let elementRange = AXHelper.textMarkerRangeForElement(element, host: host),
+              let elementStartMarker = AXHelper.startMarker(of: elementRange, on: host),
+              let selectionStartMarker = AXHelper.startMarker(of: selectedMarkerRange, on: host),
+              let prefixRange = AXHelper.markerRange(
+                between: elementStartMarker, and: selectionStartMarker, on: host
+              ),
+              let prefixLength = AXHelper.lengthForMarkerRange(prefixRange, on: host),
+              let selectionLength = AXHelper.lengthForMarkerRange(selectedMarkerRange, on: host)
+        else {
+            return nil
+        }
+
+        let fullText = AXHelper.stringForMarkerRange(elementRange, on: host) ?? ""
+        let nsText = fullText as NSString
+        let globalLocation = max(0, min(prefixLength, nsText.length))
+
+        let preWindow = 4096
+        let postWindow = 4096
+        let windowStart = max(0, globalLocation - preWindow)
+        let windowEnd = min(nsText.length, globalLocation + postWindow)
+        let windowedText = nsText.substring(
+            with: NSRange(location: windowStart, length: windowEnd - windowStart)
+        )
+        let localLocation = globalLocation - windowStart
+
+        return MarkerSelectionSynthesis(
+            text: windowedText,
+            range: NSRange(location: localLocation, length: max(0, selectionLength))
+        )
+    }
+
+    /// Walks up the ancestor chain looking for the nearest element that exposes the AX text
+    /// marker API. In Chromium-based browsers this is the `AXWebArea` for the active tab; in
+    /// native apps it's typically the text view itself, but we still walk up because some apps
+    /// publish markers only on the document-level element.
+    private func findMarkerHost(startingFrom element: AXUIElement) -> AXUIElement? {
+        var current: AXUIElement? = element
+        var hops = 0
+        while let node = current, hops < 12 {
+            let attributes = Set(AXHelper.attributeNames(on: node))
+            let parameterized = Set(AXHelper.parameterizedAttributeNames(on: node))
+            if attributes.contains("AXSelectedTextMarkerRange"),
+               parameterized.contains("AXTextMarkerRangeForUIElement"),
+               parameterized.contains("AXLengthForTextMarkerRange") {
+                return node
+            }
+            current = AXHelper.parentElement(of: node)
+            hops += 1
+        }
+        return nil
     }
 
     /// Detects secure inputs so Tabby can intentionally refuse to operate in sensitive fields.
@@ -659,6 +797,14 @@ struct FocusSnapshotResolver {
     private func fmt(_ rect: CGRect) -> String {
         String(format: "(%.0f, %.0f, %.0f×%.0f)", rect.origin.x, rect.origin.y, rect.width, rect.height)
     }
+}
+
+/// Result of synthesizing a usable text + selection pair from a Chromium contenteditable's
+/// opaque AX text-marker state. The text is intentionally windowed around the caret so we don't
+/// drag entire Gmail threads or Notion docs through every focus snapshot.
+private struct MarkerSelectionSynthesis {
+    let text: String
+    let range: NSRange
 }
 
 /// AX data read from one candidate element near the current focus.
