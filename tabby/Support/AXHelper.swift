@@ -371,6 +371,66 @@ enum AXHelper {
         return axElement
     }
 
+    /// Returns the focused UI element via an application-scoped query against `pid`.
+    ///
+    /// This is a fallback for the system-wide query returning nil. Chromium browsers do this for
+    /// web content hosted in an iframe (Gmail's compose box, other embedded editors): the
+    /// system-wide `kAXFocusedUIElementAttribute` resolves to nothing, but the browser's own
+    /// application AX element still reports the focused web node (typically carrying the
+    /// renderer's PID). Filters Tabby's own elements for the same reason as `focusedElement()`.
+    static func focusedElement(forApplicationPID pid: pid_t) -> AXUIElement? {
+        guard pid > 0 else {
+            return nil
+        }
+
+        let appElement = AXUIElementCreateApplication(pid)
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(
+            appElement, kAXFocusedUIElementAttribute as CFString, &value
+        )
+        guard result == .success, let element = value,
+              CFGetTypeID(element) == AXUIElementGetTypeID() else {
+            return nil
+        }
+
+        let axElement = unsafeBitCast(element, to: AXUIElement.self)
+
+        var elementPID: pid_t = 0
+        AXUIElementGetPid(axElement, &elementPID)
+        if elementPID == ProcessInfo.processInfo.processIdentifier {
+            return nil
+        }
+
+        return axElement
+    }
+
+    /// Returns the deepest AX element at a global screen point via hit-testing.
+    ///
+    /// This is the one query that crosses Chromium's out-of-process-iframe boundary: the focused
+    /// node of an OOPIF (Gmail's compose box) isn't reachable through any focused-element
+    /// attribute, but `AXUIElementCopyElementAtPosition` resolves it because the window server
+    /// knows the on-screen geometry across processes — the same mechanism Accessibility Inspector
+    /// uses when you point at an element. `point` must be in top-left global coordinates (what
+    /// `CGEvent.location` returns). Filters Tabby's own elements for the usual reason.
+    static func elementAtPosition(_ point: CGPoint) -> AXUIElement? {
+        let systemWideElement = AXUIElementCreateSystemWide()
+        var value: AXUIElement?
+        let result = AXUIElementCopyElementAtPosition(
+            systemWideElement, Float(point.x), Float(point.y), &value
+        )
+        guard result == .success, let element = value else {
+            return nil
+        }
+
+        var elementPID: pid_t = 0
+        AXUIElementGetPid(element, &elementPID)
+        if elementPID == ProcessInfo.processInfo.processIdentifier {
+            return nil
+        }
+
+        return element
+    }
+
     /// Returns the parent AX node when the current element exposes one.
     static func parentElement(of element: AXUIElement) -> AXUIElement? {
         guard let value = copyAttributeValue(kAXParentAttribute as CFString, on: element) else {
