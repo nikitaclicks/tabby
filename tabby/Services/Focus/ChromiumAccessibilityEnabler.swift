@@ -25,10 +25,14 @@ import Foundation
 /// quits and relaunches the browser within the same Tabby session.
 @MainActor
 final class ChromiumAccessibilityEnabler {
-    /// Bundle identifiers of Chromium-based browsers we know respond to `AXManualAccessibility`.
-    /// Electron-based desktop apps (Slack, VS Code, Discord, Notion, …) are also Chromium and
-    /// would benefit, but priming them blindly risks surfacing accessibility behavior the app
-    /// isn't designed to handle. Keeping the list to actual browsers is a conservative default.
+    /// Bundle identifiers of Chromium-based apps we know respond to `AXManualAccessibility`.
+    ///
+    /// The list is mostly actual browsers. Electron desktop apps (Slack, VS Code, Discord,
+    /// Notion, …) are also Chromium and would benefit, but priming them blindly risks surfacing
+    /// accessibility behavior the app isn't designed to handle, so we don't add Electron apps
+    /// wholesale. `com.clickup.desktop-app` is an intentional exception: it's a first-class
+    /// target for Tabby (the user explicitly wants inline autocomplete in the ClickUp desktop
+    /// app), and its web AX behaves the same as ClickUp in a browser tab once primed.
     private static let knownChromiumBundleIdentifiers: Set<String> = [
         "com.google.Chrome",
         "com.google.Chrome.canary",
@@ -47,7 +51,8 @@ final class ChromiumAccessibilityEnabler {
         "com.operasoftware.OperaGX",
         "company.thebrowser.Browser",   // Arc
         "company.thebrowser.dia",       // Dia (Arc's successor)
-        "com.thebrowser.Browser"
+        "com.thebrowser.Browser",
+        "com.clickup.desktop-app"       // ClickUp desktop (Electron) — intentional exception
     ]
 
     private static let attributeName = "AXManualAccessibility" as CFString
